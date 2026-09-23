@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+# Never cancel a release half way; a second push of the same tag waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Homebrew tap trusts the tag, so a tag that disagrees with the
+      # binary's own version must never produce a release.
+      - name: Check tag against the package version
+        id: check
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[0].version')"
+          if [[ "$RELEASE_TAG" != "v${package_version}" ]]; then
+            echo "Tag ${RELEASE_TAG} does not match Cargo.toml version ${package_version}" >&2
+            exit 1
+          fi
+          # Semantic Versioning: a hyphen before any build metadata marks a
+          # prerelease, such as 0.2.0-rc.1. Build metadata after "+" does not.
+          core="${package_version%%+*}"
+          if [[ "$core" == *-* ]]; then
+            echo "prerelease=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >>"$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    name: CI
+    # actionlint does not yet accept the "$/" self-repository form.
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [verify-tag, ci]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    # No build cache: a release artifact must not depend on state that an
+    # earlier, less trusted workflow run could have written.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: endsWith(matrix.target, '-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # `entra version` reports these. The commit time, not the wall clock,
+      # keeps two builds of one tag identical.
+      - name: Record build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ENTRA_BUILD_COMMIT=${GITHUB_SHA}" >>"$GITHUB_ENV"
+          echo "ENTRA_BUILD_DATE=$(git log -1 --format=%cI)" >>"$GITHUB_ENV"
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="entra-${RELEASE_TAG}-${TARGET}"
+          mkdir -p "dist/${package}/bin" "dist/${package}/share/doc/entra/contrib"
+          cp "target/${TARGET}/release/entra" "dist/${package}/bin/entra"
+          cp README.md LICENSE NOTICE "dist/${package}/share/doc/entra/"
+          cp -R docs "dist/${package}/share/doc/entra/docs"
+          # Homebrew users on macOS re-sign after each upgrade with this.
+          cp contrib/resign.sh "dist/${package}/share/doc/entra/contrib/"
+          tar czf "${package}.tar.gz" -C dist "${package}"
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = "entra-$env:RELEASE_TAG-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path "dist/$package/bin", "dist/$package/share/doc/entra" | Out-Null
+          Copy-Item "target/$env:TARGET/release/entra.exe" "dist/$package/bin/entra.exe"
+          Copy-Item -Path @("README.md", "LICENSE", "NOTICE") -Destination "dist/$package/share/doc/entra/"
+          Copy-Item -Recurse "docs" "dist/$package/share/doc/entra/docs"
+          Compress-Archive -Path "dist/$package" -DestinationPath "$package.zip"
+
+      # Unpack the archive that will be published and run what is inside it,
+      # so a packaging mistake fails here rather than on a user's machine.
+      - name: Smoke-test the archive (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="entra-${RELEASE_TAG}-${TARGET}"
+          mkdir smoke
+          tar xzf "${package}.tar.gz" -C smoke
+          "smoke/${package}/bin/entra" version
+          "smoke/${package}/bin/entra" --help >/dev/null
+          test -f "smoke/${package}/share/doc/entra/LICENSE"
+          test -f "smoke/${package}/share/doc/entra/docs/auth.md"
+          test -x "smoke/${package}/share/doc/entra/contrib/resign.sh"
+
+      # The Linux archives promise a static binary that runs on any
+      # distribution, so it must have no program interpreter and no shared
+      # library dependencies.
+      - name: Check the Linux binary is statically linked
+        if: endsWith(matrix.target, '-linux-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${TARGET}/release/entra"
+          if readelf --program-headers --wide "$binary" | grep -q INTERP; then
+            echo "${binary} requests a program interpreter" >&2
+            exit 1
+          fi
+          if readelf --dynamic --wide "$binary" | grep -q NEEDED; then
+            echo "${binary} depends on shared libraries" >&2
+            exit 1
+          fi
+
+      - name: Smoke-test the archive (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $package = "entra-$env:RELEASE_TAG-$env:TARGET"
+          Expand-Archive -Path "$package.zip" -DestinationPath smoke
+          & "smoke/$package/bin/entra.exe" version
+          & "smoke/$package/bin/entra.exe" --help | Out-Null
+          if (-not (Test-Path "smoke/$package/share/doc/entra/docs/auth.md")) { throw "docs missing from $package.zip" }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: entra-${{ matrix.target }}
+          path: entra-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: [verify-tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum entra-* > checksums-sha256.txt
+          cat checksums-sha256.txt
+          test "$(wc -l < checksums-sha256.txt)" -eq 5
+
+      - name: Create GitHub release
+        working-directory: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify-tag.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=(--repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG")
+          if [[ "$PRERELEASE" == true ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${flags[@]}" entra-* checksums-sha256.txt

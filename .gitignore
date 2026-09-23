@@ -1,0 +1,28 @@
+# Compiled binaries and Cargo build state.
+/bin/
+/dist/
+/target/
+/entra
+*.exe
+
+# Anything the tool reads out of the directory is real staff data. It should
+# never be written into the working tree, but if a debugging session does so,
+# these patterns stop it reaching a commit.
+*.json
+*.jsonl
+*.csv
+scratch/
+tmp/
+
+# Local credentials and environment. Tokens live in the operating-system
+# keyring rather than on disk, but an .env used while testing must not travel.
+.env
+.env.*
+*.pem
+*.key
+
+# Editor and operating-system noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

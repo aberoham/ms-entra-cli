@@ -1,0 +1,42 @@
+[package]
+name = "ms-entra-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Small read-only Microsoft Entra ID directory lookup CLI"
+repository = "https://github.com/aberoham/ms-entra-cli"
+
+[[bin]]
+name = "entra"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = "0.4"
+dirs = "6"
+getrandom = "0.3"
+keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+url = "2"
+uuid = "1"
+webbrowser = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+wiremock = "0.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
