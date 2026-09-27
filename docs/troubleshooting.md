@@ -189,24 +189,26 @@ rather than becoming an opaque Graph error. Shorten the query.
 ## macOS keychain prompts after every upgrade
 
 macOS ties a keychain authorisation to the **identity of the program** that
-asked for it. Homebrew installs, and `cargo build` produces, an ad-hoc-signed
-binary whose identity changes with every build. macOS therefore treats each
-upgrade or rebuild as a different program and asks again. "Always Allow" does
-work, but only for the binary you then replace.
+asked for it. Releases from `v0.1.1` on are Developer ID signed with the stable
+identifier `com.aberoham.entra`, so "Always Allow" persists from one signed
+release to the next. Expect one more prompt on the first upgrade from an
+earlier, ad-hoc-signed release or from a binary you re-signed yourself.
 
-To make the grant persist, sign every new binary with the same certificate.
-`contrib/resign.sh` explains how to create a free self-signed code-signing
-certificate in Keychain Access, then signs with it. It looks for a certificate
-named `entra-cli-signer`, or the name in `SIGN_IDENTITY`.
-
-After a Homebrew install or upgrade, run the copy of the script that Homebrew
-installed, against the real file behind the Homebrew symlink:
+Check what is installed:
 
 ```bash
-"$(brew --prefix)/share/doc/entra/contrib/resign.sh" "$(realpath "$(brew --prefix)/bin/entra")"
+codesign -dv "$(realpath "$(brew --prefix)/bin/entra")"
 ```
 
-When you build from source, the installer builds, tests, signs and installs
+A signed release shows `TeamIdentifier=2VLHJGU477`. **Do not run
+`contrib/resign.sh` on it**: that replaces the Developer ID signature, and the
+prompts return on every upgrade.
+
+`cargo build` still produces an ad-hoc-signed binary whose identity changes
+with every build. For source builds, `contrib/resign.sh` explains how to create
+a free self-signed code-signing certificate in Keychain Access, then signs
+with it. It looks for a certificate named `entra-cli-signer`, or the name in
+`SIGN_IDENTITY`. The installer builds, tests, signs and installs
 `~/.local/bin/entra` in one step:
 
 ```bash
