@@ -8,7 +8,11 @@ fn version_command_is_available_without_configuration() {
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("entra 0.1.0"));
+        .stdout(predicate::str::starts_with(concat!(
+            "entra ",
+            env!("CARGO_PKG_VERSION"),
+            " "
+        )));
 }
 
 #[test]

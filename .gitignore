@@ -20,6 +20,8 @@ tmp/
 .env.*
 *.pem
 *.key
+# Apple's public Developer ID G2 intermediate, imported by the release signer.
+!/.github/certificates/DeveloperIDG2CA.pem
 
 # Editor and operating-system noise
 .DS_Store

@@ -28,8 +28,11 @@
 # The default target is target/release/entra; explicit binary paths may be
 # supplied as arguments. After a source build:
 #   cargo build --release && ./contrib/resign.sh
-# After a Homebrew install or upgrade, sign the real file, not the symlink.
-# Homebrew installs this script under share/doc/entra/contrib:
+# Releases from v0.1.1 on are Developer ID signed (TeamIdentifier 2VLHJGU477)
+# and keep keychain grants across upgrades on their own. Do not re-sign them:
+# that replaces the release signature. The script refuses to unless
+# ENTRA_RESIGN_RELEASE=1. For an older, ad-hoc-signed Homebrew install, sign
+# the real file, not the symlink:
 #   "$(brew --prefix)/share/doc/entra/contrib/resign.sh" \
 #     "$(realpath "$(brew --prefix)/bin/entra")"
 set -euo pipefail
@@ -69,6 +72,12 @@ signed=0
 for bin in "${BINARIES[@]}"; do
   if [ ! -x "$bin" ]; then
     echo "error: binary is missing or not executable: $bin" >&2
+    exit 1
+  fi
+  if [ "${ENTRA_RESIGN_RELEASE:-}" != 1 ] &&
+    codesign -dv "$bin" 2>&1 | grep -qx 'TeamIdentifier=2VLHJGU477'; then
+    echo "error: $bin is a Developer ID signed release; it already keeps keychain" >&2
+    echo "grants across upgrades. Set ENTRA_RESIGN_RELEASE=1 to replace its signature anyway." >&2
     exit 1
   fi
   codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$bin"
