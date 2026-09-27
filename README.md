@@ -67,10 +67,9 @@ Release archives for macOS (Apple silicon and Intel), Linux (x86-64 and Arm64,
 statically linked) and Windows are on the
 [releases page](https://github.com/aberoham/ms-entra-cli/releases). Each
 archive contains `bin/entra` and the documentation under `share/doc/entra/`.
-The macOS binaries are Developer ID signed but not notarized, so a copy
-downloaded with a browser is quarantined and Gatekeeper will refuse to run it.
-Prefer Homebrew. Otherwise, check the archive against `checksums-sha256.txt`,
-then clear the flag with `xattr -d com.apple.quarantine bin/entra`.
+From `v0.1.1`, the macOS binaries are Developer ID signed and notarized by
+Apple. Gatekeeper accepts a browser-downloaded copy after an online check the
+first time it runs. Check the archive against `checksums-sha256.txt` as usual.
 
 To build from source you need a current stable Rust toolchain:
 
