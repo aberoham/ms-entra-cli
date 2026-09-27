@@ -21,6 +21,8 @@ list during unconditional cleanup. It does not change certificate trust or
 import credentials into the login keychain. The public intermediate is from
 https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer.
 
+The signing job also notarizes each binary with the team API key. `APPLE_NOTARY_KEY_P8_BASE64` is a `release` environment secret; `APPLE_NOTARY_KEY_ID` and `APPLE_NOTARY_ISSUER_ID` are variables. The key reaches only the sign step, and is decoded into a private temporary directory for one submission. The job fails unless Apple returns `Accepted`. A bare binary cannot be stapled, so Gatekeeper checks the ticket online the first time a quarantined copy runs.
+
 Signing runs after compilation and before release checksums are generated.
 Keep the signing identifier stable across versions. Existing keychain items
 created by older signatures may require one approval or a new sign-in. A
