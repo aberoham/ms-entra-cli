@@ -194,7 +194,8 @@ jobs:
     # Defense in depth; the environment reviewer and tag ruleset are the boundary.
     if: github.repository_owner_id == 586805 && github.actor == 'aberoham' && github.triggering_actor == 'aberoham'
     environment: release
-    timeout-minutes: 15
+    # One notarization wait of up to 45 minutes per architecture.
+    timeout-minutes: 60
     strategy:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
@@ -215,7 +216,11 @@ jobs:
           MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: python3 .github/scripts/macos-signing.py prepare
-      - name: Sign and verify the packaged binary
+      - name: Sign, notarize and verify the packaged binary
+        env:
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -223,7 +228,7 @@ jobs:
           unpacked="$RUNNER_TEMP/signed-package"
           mkdir -p "$unpacked"
           tar xzf "${package}.tar.gz" -C "$unpacked"
-          python3 .github/scripts/macos-signing.py sign "$unpacked/$package/bin/entra" com.aberoham.entra
+          python3 .github/scripts/macos-signing.py sign "$unpacked/$package/bin/entra" com.aberoham.entra --notarize
           tar czf "${package}.tar.gz" -C "$unpacked" "$package"
       - name: Replace the unsigned artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
