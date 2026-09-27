@@ -33,10 +33,11 @@ be reviewed, assigned and revoked on its own.
 brew install aberoham/tap/entra
 ```
 
-On macOS, Homebrew installs an ad-hoc-signed binary, so the Keychain asks for
-permission again after every upgrade. See
-[troubleshooting](docs/troubleshooting.md#macos-keychain-prompts-after-every-upgrade)
-to make the grant persist.
+From `v0.1.1`, the macOS binaries are signed with a Developer ID
+(`TeamIdentifier=2VLHJGU477`, identifier `com.aberoham.entra`). Keychain access
+granted once therefore carries over to later releases. Upgrading from `v0.1.0`
+or earlier asks one more time; choose **Always Allow**. See
+[troubleshooting](docs/troubleshooting.md#macos-keychain-prompts-after-every-upgrade).
 
 ### Windows
 
@@ -66,6 +67,9 @@ Release archives for macOS (Apple silicon and Intel), Linux (x86-64 and Arm64,
 statically linked) and Windows are on the
 [releases page](https://github.com/aberoham/ms-entra-cli/releases). Each
 archive contains `bin/entra` and the documentation under `share/doc/entra/`.
+From `v0.1.1`, the macOS binaries are Developer ID signed and notarized by
+Apple. Gatekeeper accepts a browser-downloaded copy after an online check the
+first time it runs. Check the archive against `checksums-sha256.txt` as usual.
 
 To build from source you need a current stable Rust toolchain:
 
@@ -74,9 +78,12 @@ cargo build --release --locked
 ./target/release/entra --help
 ```
 
-On macOS, `./contrib/install.sh` runs the tests, builds, signs the binary with
-a stable certificate, and installs it as `~/.local/bin/entra`. Signing stops
-the Keychain from asking again after every rebuild; see
+`cargo build` produces an ad-hoc-signed binary, whose identity changes with
+every build. On macOS, `./contrib/install.sh` runs the tests, builds, signs the
+binary with your own stable local certificate, and installs it as
+`~/.local/bin/entra`. That stops the Keychain from asking again after every
+rebuild. A source build and a Homebrew release have different identities, so
+switching between them asks once; see
 [troubleshooting](docs/troubleshooting.md#macos-keychain-prompts-after-every-upgrade).
 
 ## Set up
