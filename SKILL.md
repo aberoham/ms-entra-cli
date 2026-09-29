@@ -41,7 +41,10 @@ the Microsoft Entra admin center; `docs/auth.md` covers both. The script
 `ALLOW_ALL_TENANT_USERS=1` is set deliberately.
 
 Registration and sign-in are interactive, so a person runs them. Do not guess
-a client ID or tenant ID; ask the user for them.
+a client ID or tenant ID. Login uses `ENTRA_CLIENT_ID` and `ENTRA_TENANT_ID`
+when set, and otherwise reuses the registration saved at an earlier login, so
+signing in again needs neither. For a first sign-in with neither available,
+ask the user for them.
 
 ## Signing in
 
@@ -51,7 +54,8 @@ entra auth login --browser --directory \
   --tenant-id <tenant-id>
 ```
 
-- `--client-id` is **required and has no default.** Use the application
+- `--client-id` (or `ENTRA_CLIENT_ID`) is **required; `entra` has no default
+  registration.** Use the application
   (client) ID of the registration, not the enterprise application's object ID.
   A client ID borrowed from another Graph tool signs in and then fails every
   manager lookup, because that registration was not consented for directory
@@ -59,6 +63,9 @@ entra auth login --browser --directory \
 - `--directory` requests `User.Read.All` and `AuditLog.Read.All`. Without it
   you get a login that reads your own profile and everyone's basic details:
   enough for `user search`, not enough for manager or sign-in-activity reads.
+- `--lifecycle` adds `User-LifeCycleInfo.Read.All`. Without it (and a role
+  such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
+  not evidence that nobody is leaving.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.

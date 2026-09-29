@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::attributes::{
     all_properties, group_properties, AttributeGroup, ATTRIBUTE_GROUPS, SIGN_IN_ACTIVITY_GROUP,
 };
-use crate::auth::{directory_scopes, merge_scopes, AccountInfo, Authenticator};
+use crate::auth::{requested_scopes, AccountInfo, Authenticator};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
 use crate::graph::{GraphClient, PROFILE_FIELDS};
@@ -137,19 +137,24 @@ enum AuthCommand {
 
 #[derive(Debug, Clone, Args)]
 struct AuthLogin {
-    #[arg(long, help = "Application (client) id of the app registration")]
-    client_id: String,
     #[arg(
         long,
-        default_value = DEFAULT_TENANT_ID,
-        help = "Directory (tenant) id"
+        env = "ENTRA_CLIENT_ID",
+        help = "Application (client) id of the app registration"
     )]
-    tenant_id: String,
+    client_id: Option<String>,
+    #[arg(long, env = "ENTRA_TENANT_ID", help = "Directory (tenant) id")]
+    tenant_id: Option<String>,
     #[arg(
         long,
         help = "Request User.Read.All and AuditLog.Read.All for full directory reads (needs administrator consent)"
     )]
     directory: bool,
+    #[arg(
+        long,
+        help = "Request User-LifeCycleInfo.Read.All so the employee leave date is populated (needs administrator consent and a supported role)"
+    )]
+    lifecycle: bool,
     #[arg(long, help = "Sign in via the system browser instead of device code")]
     browser: bool,
     #[arg(long, action = clap::ArgAction::Append, help = "Additional OAuth scope to request (repeatable)")]
@@ -163,6 +168,11 @@ struct AuthRefresh {
         help = "Request User.Read.All and AuditLog.Read.All while refreshing (needs administrator consent)"
     )]
     directory: bool,
+    #[arg(
+        long,
+        help = "Request User-LifeCycleInfo.Read.All while refreshing (needs administrator consent)"
+    )]
+    lifecycle: bool,
     #[arg(
         long,
         action = clap::ArgAction::Append,
@@ -347,70 +357,14 @@ async fn run_auth(
     command: AuthCommand,
 ) -> Result<()> {
     match command {
-        AuthCommand::Login(login) => {
-            if cli.no_input {
-                return Err(EntraError::message(
-                    "login is interactive and --no-input was given",
-                ));
-            }
-            let scopes = merge_scopes(
-                if login.directory {
-                    directory_scopes()
-                } else {
-                    crate::auth::default_scopes()
-                },
-                &login.scope,
-            );
-            let auth = Authenticator::new(store, &login.client_id, &login.tenant_id)?;
-            let info = if login.browser {
-                auth.login_browser(&scopes, cli.verbose).await
-            } else {
-                auth.login_device_code(&scopes, cli.verbose).await
-            }
-            .map_err(|error| error.context("login failed"))?;
-            let mut config = Config::load().map_err(|error| error.context("loading config"))?;
-            config.clients.insert(
-                info.email.clone(),
-                ClientConfig {
-                    client_id: login.client_id,
-                    tenant_id: login.tenant_id,
-                },
-            );
-            if config.default_account.is_empty() {
-                config.default_account = info.email.clone();
-            }
-            config
-                .save()
-                .map_err(|error| error.context("saving config"))?;
-            println!(
-                "Logged in as {} ({})",
-                sanitize(&info.display_name),
-                sanitize(&info.email)
-            );
-            if !login.directory {
-                println!(
-                    "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent."
-                );
-            }
-            Ok(())
-        }
+        AuthCommand::Login(login) => run_login(cli, store, login).await,
         AuthCommand::Refresh(refresh) => {
             let config = Config::load().map_err(|error| error.context("loading config"))?;
             let account = select_account(cli, store.clone(), &config, None).await?;
             let email = account.email.clone();
             let auth = authenticator_for_account(store, &config, &account)?;
-            let requested = if refresh.directory || !refresh.scope.is_empty() {
-                Some(merge_scopes(
-                    if refresh.directory {
-                        directory_scopes()
-                    } else {
-                        crate::auth::default_scopes()
-                    },
-                    &refresh.scope,
-                ))
-            } else {
-                None
-            };
+            let requested = (refresh.directory || refresh.lifecycle || !refresh.scope.is_empty())
+                .then(|| requested_scopes(refresh.directory, refresh.lifecycle, &refresh.scope));
             let token = auth
                 .refresh(&email, requested.as_deref(), cli.verbose)
                 .await
@@ -481,6 +435,200 @@ async fn run_auth(
             Ok(())
         }
     }
+}
+
+async fn run_login(cli: &Cli, store: Arc<dyn CredentialStore>, login: AuthLogin) -> Result<()> {
+    if cli.no_input {
+        return Err(EntraError::message(
+            "login is interactive and --no-input was given",
+        ));
+    }
+    let stored = Config::load().map_err(|error| error.context("loading config"))?;
+    let registration = login_registration(
+        login.client_id.as_deref(),
+        login.tenant_id.as_deref(),
+        &stored,
+        cli.account.as_deref(),
+    )?;
+    let scopes = requested_scopes(login.directory, login.lifecycle, &login.scope);
+    let reused = registration
+        .saved_with
+        .as_deref()
+        .map(|email| format!(", as saved with {}", sanitize(email)))
+        .unwrap_or_default();
+    eprintln!(
+        "Signing in through app registration {} in tenant {}{reused}",
+        sanitize(&registration.client_id),
+        sanitize(&registration.tenant_id)
+    );
+    let LoginRegistration {
+        client_id,
+        tenant_id,
+        ..
+    } = registration;
+    let auth = Authenticator::new(store, &client_id, &tenant_id)?;
+    let info = if login.browser {
+        auth.login_browser(&scopes, cli.verbose).await
+    } else {
+        auth.login_device_code(&scopes, cli.verbose).await
+    }
+    .map_err(|error| error.context("login failed"))?;
+    let mut config = Config::load().map_err(|error| error.context("loading config"))?;
+    config.clients.insert(
+        info.email.clone(),
+        ClientConfig {
+            client_id,
+            tenant_id,
+        },
+    );
+    if config.default_account.is_empty() {
+        config.default_account = info.email.clone();
+    }
+    config
+        .save()
+        .map_err(|error| error.context("saving config"))?;
+    println!(
+        "Logged in as {} ({})",
+        sanitize(&info.display_name),
+        sanitize(&info.email)
+    );
+    if !login.directory {
+        println!(
+            "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent."
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+struct LoginRegistration {
+    client_id: String,
+    tenant_id: String,
+    /// The stored account whose registration is being reused, if any.
+    saved_with: Option<String>,
+}
+
+/// Chooses the app registration to sign in through. `entra` ships with none of
+/// its own, so it comes from `--client-id` or `ENTRA_CLIENT_ID` when given, and
+/// otherwise from the registration saved at an earlier login: the `--account`
+/// named, else the default account, else the one registration every stored
+/// account shares. A signing-in person whose token has been revoked therefore
+/// needs no flags to sign in again. The tenant follows the same order, with an
+/// explicit tenant always winning and `common` as the last resort.
+fn login_registration(
+    client_flag: Option<&str>,
+    tenant_flag: Option<&str>,
+    config: &Config,
+    account: Option<&str>,
+) -> Result<LoginRegistration> {
+    let tenant_flag = non_empty(tenant_flag);
+    if let Some(client_id) = non_empty(client_flag) {
+        let tenant = match tenant_flag {
+            Some(tenant) => Some(tenant),
+            None => saved_tenant_for(config, client_id, account)?,
+        };
+        return Ok(LoginRegistration {
+            client_id: client_id.to_owned(),
+            tenant_id: tenant_or_default(tenant),
+            saved_with: None,
+        });
+    }
+    let (email, client) = saved_registration(config, account)?;
+    Ok(LoginRegistration {
+        client_id: client.client_id.clone(),
+        tenant_id: tenant_or_default(tenant_flag.or(Some(client.tenant_id.as_str()))),
+        saved_with: Some(email.to_owned()),
+    })
+}
+
+/// The saved tenant for an explicitly given client ID: the chosen or default
+/// account's, when it used that app, else the one tenant every account using
+/// that app shares. A multi-tenant app saved against several tenants is
+/// refused rather than guessed, since signing in to the wrong directory is a
+/// quiet failure.
+fn saved_tenant_for<'a>(
+    config: &'a Config,
+    client_id: &str,
+    account: Option<&str>,
+) -> Result<Option<&'a str>> {
+    let tenant_of = |client: &'a ClientConfig| {
+        (client.client_id.eq_ignore_ascii_case(client_id))
+            .then(|| non_empty(Some(&client.tenant_id)))
+            .flatten()
+    };
+    let preferred = non_empty(account).or(non_empty(Some(&config.default_account)));
+    if let Some(tenant) = preferred.and_then(|wanted| {
+        config
+            .clients
+            .iter()
+            .find(|(email, _)| email.eq_ignore_ascii_case(wanted))
+            .and_then(|(_, client)| tenant_of(client))
+    }) {
+        return Ok(Some(tenant));
+    }
+    let mut tenants: Vec<&str> = config.clients.values().filter_map(tenant_of).collect();
+    tenants.sort_by_key(|tenant| tenant.to_ascii_lowercase());
+    tenants.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    match tenants.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some(only)),
+        _ => Err(EntraError::message(format!(
+            "app registration {client_id} is saved against several tenants ({}); pass --tenant-id or --account",
+            tenants.join(", ")
+        ))),
+    }
+}
+
+fn saved_registration<'a>(
+    config: &'a Config,
+    account: Option<&str>,
+) -> Result<(&'a str, &'a ClientConfig)> {
+    let usable = |(email, client): (&'a String, &'a ClientConfig)| {
+        (!client.client_id.trim().is_empty()).then_some((email.as_str(), client))
+    };
+    let lookup = |wanted: &str| {
+        config
+            .clients
+            .iter()
+            .find(|(email, _)| email.eq_ignore_ascii_case(wanted))
+            .and_then(usable)
+    };
+    if let Some(account) = non_empty(account) {
+        return lookup(account).ok_or_else(|| {
+            EntraError::message(format!(
+                "no app registration is saved for {account:?}; pass --client-id <application-id> or set ENTRA_CLIENT_ID"
+            ))
+        });
+    }
+    if let Some(found) = non_empty(Some(&config.default_account)).and_then(lookup) {
+        return Ok(found);
+    }
+    let saved: Vec<_> = config.clients.iter().filter_map(usable).collect();
+    let first = saved.first().copied();
+    let shared = first.filter(|(_, first)| {
+        saved.iter().all(|(_, client)| {
+            client.client_id.eq_ignore_ascii_case(&first.client_id)
+                && client.tenant_id.eq_ignore_ascii_case(&first.tenant_id)
+        })
+    });
+    shared.ok_or_else(|| {
+        let reason = if saved.is_empty() {
+            "no app registration given and none is saved from an earlier login"
+        } else {
+            "no app registration given, and the saved accounts use different ones; choose with --account"
+        };
+        EntraError::message(format!(
+            "{reason}; pass --client-id <application-id> or set ENTRA_CLIENT_ID. See docs/auth.md for creating one"
+        ))
+    })
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn tenant_or_default(tenant: Option<&str>) -> String {
+    non_empty(tenant).unwrap_or(DEFAULT_TENANT_ID).to_owned()
 }
 
 async fn run_user_with_accounts(
@@ -1255,6 +1403,151 @@ mod tests {
         assert_eq!(
             selected_properties(&get).unwrap(),
             ["id", "displayName", "userPrincipalName", "signInActivity"]
+        );
+    }
+
+    const APP_A: &str = "00000000-0000-4000-8000-00000000000a";
+    const APP_B: &str = "00000000-0000-4000-8000-00000000000b";
+    const TENANT_A: &str = "00000000-0000-4000-8000-0000000000aa";
+    const TENANT_B: &str = "00000000-0000-4000-8000-0000000000bb";
+
+    fn saved(default_account: &str, clients: &[(&str, &str, &str)]) -> Config {
+        Config {
+            default_account: default_account.into(),
+            clients: clients
+                .iter()
+                .map(|(email, client_id, tenant_id)| {
+                    (
+                        (*email).to_owned(),
+                        ClientConfig {
+                            client_id: (*client_id).into(),
+                            tenant_id: (*tenant_id).into(),
+                        },
+                    )
+                })
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn explicit_registration_wins_and_borrows_its_saved_tenant() {
+        let config = saved("one@example.test", &[("one@example.test", APP_A, TENANT_A)]);
+        assert_eq!(
+            login_registration(Some(APP_A), None, &config, None).unwrap(),
+            LoginRegistration {
+                client_id: APP_A.into(),
+                tenant_id: TENANT_A.into(),
+                saved_with: None,
+            }
+        );
+        let other = login_registration(Some(APP_B), None, &config, None).unwrap();
+        assert_eq!(other.tenant_id, DEFAULT_TENANT_ID);
+        let pinned = login_registration(Some(APP_A), Some(TENANT_B), &config, None).unwrap();
+        assert_eq!(pinned.tenant_id, TENANT_B);
+    }
+
+    #[test]
+    fn missing_registration_reuses_the_default_accounts() {
+        let config = saved(
+            "two@example.test",
+            &[
+                ("one@example.test", APP_A, TENANT_A),
+                ("two@example.test", APP_B, TENANT_B),
+            ],
+        );
+        assert_eq!(
+            login_registration(None, None, &config, None).unwrap(),
+            LoginRegistration {
+                client_id: APP_B.into(),
+                tenant_id: TENANT_B.into(),
+                saved_with: Some("two@example.test".into()),
+            }
+        );
+        let named = login_registration(None, None, &config, Some("ONE@example.test")).unwrap();
+        assert_eq!(named.client_id, APP_A);
+        assert!(
+            login_registration(None, None, &config, Some("nobody@example.test"))
+                .unwrap_err()
+                .to_string()
+                .contains("no app registration is saved")
+        );
+    }
+
+    #[test]
+    fn without_a_default_only_a_shared_registration_is_reused() {
+        let shared = saved(
+            "",
+            &[
+                ("one@example.test", APP_A, TENANT_A),
+                ("two@example.test", APP_A, TENANT_A),
+            ],
+        );
+        assert_eq!(
+            login_registration(None, None, &shared, None)
+                .unwrap()
+                .client_id,
+            APP_A
+        );
+        let mixed = saved(
+            "",
+            &[
+                ("one@example.test", APP_A, TENANT_A),
+                ("two@example.test", APP_B, TENANT_A),
+            ],
+        );
+        assert!(login_registration(None, None, &mixed, None)
+            .unwrap_err()
+            .to_string()
+            .contains("choose with --account"));
+        assert!(login_registration(None, None, &Config::default(), None)
+            .unwrap_err()
+            .to_string()
+            .contains("ENTRA_CLIENT_ID"));
+    }
+
+    #[test]
+    fn explicit_multi_tenant_app_takes_the_chosen_accounts_tenant_or_refuses() {
+        let config = saved(
+            "",
+            &[
+                ("one@example.test", APP_A, TENANT_A),
+                ("two@example.test", APP_A, TENANT_B),
+            ],
+        );
+        let chosen =
+            login_registration(Some(APP_A), None, &config, Some("two@example.test")).unwrap();
+        assert_eq!(chosen.tenant_id, TENANT_B);
+        let defaulted = Config {
+            default_account: "one@example.test".into(),
+            ..config.clone()
+        };
+        assert_eq!(
+            login_registration(Some(APP_A), None, &defaulted, None)
+                .unwrap()
+                .tenant_id,
+            TENANT_A
+        );
+        assert!(login_registration(Some(APP_A), None, &config, None)
+            .unwrap_err()
+            .to_string()
+            .contains("several tenants"));
+        assert_eq!(
+            login_registration(Some(APP_A), Some(TENANT_B), &config, None)
+                .unwrap()
+                .tenant_id,
+            TENANT_B
+        );
+    }
+
+    #[test]
+    fn saved_registration_without_a_tenant_falls_back_to_common() {
+        let config = saved("one@example.test", &[("one@example.test", APP_A, "")]);
+        assert_eq!(
+            login_registration(None, None, &config, None)
+                .unwrap()
+                .tenant_id,
+            DEFAULT_TENANT_ID
         );
     }
 

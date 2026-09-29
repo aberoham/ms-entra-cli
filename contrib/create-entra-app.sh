@@ -16,9 +16,19 @@ set -euo pipefail
 # Usage:
 #   TENANT_ID=<tenant-guid> ./contrib/create-entra-app.sh
 #
+# TENANT_ID and CLIENT_ID fall back to ENTRA_TENANT_ID and ENTRA_CLIENT_ID,
+# then to the registration saved by the last `entra auth login` (for
+# ENTRA_ACCOUNT, else the default account; reading it needs jq). A known
+# CLIENT_ID updates that registration in place rather than looking one up by
+# display name, so re-running to add a permission never creates a second app.
+# Re-running against an app that already requires assignment needs no new
+# assignment variables.
+#
 # Optional environment overrides:
+#   CLIENT_ID        application (client) ID of an existing registration to update
 #   APP_NAME         display name             (default: "Entra CLI (read-only directory lookups)")
-#   SCOPES           space-separated scopes   (default includes AuditLog.Read.All; see below)
+#   SCOPES           space-separated scopes   (default includes AuditLog.Read.All and
+#                    User-LifeCycleInfo.Read.All; see docs/auth.md)
 #   GROUP_OBJECT_ID  group object ID to assign
 #   ASSIGN_USERS     space-separated user UPNs (or object IDs) to assign
 #   ALLOW_ALL_TENANT_USERS=1 to intentionally allow any tenant user to sign in
@@ -35,19 +45,37 @@ set -euo pipefail
 # create applications; admin consent additionally needs Cloud
 # Application Administrator, Application Administrator or a higher role.
 
-TENANT_ID="${TENANT_ID:?Set TENANT_ID=<your directory (tenant) ID>}"
-APP_NAME="${APP_NAME:-Entra CLI (read-only directory lookups)}"
-SCOPES="${SCOPES:-offline_access User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All}"
-GRAPH_SP="00000003-0000-0000-c000-000000000000"
+# saved_registration prints the client_id or tenant_id that `entra auth login`
+# saved for ENTRA_ACCOUNT, else for the default account, or nothing.
+saved_registration() {
+  local dir file
+  if [ -n "${ENTRA_CONFIG_DIR:-}" ]; then
+    dir="$ENTRA_CONFIG_DIR"
+  elif [ "$(uname -s)" = Darwin ]; then
+    dir="$HOME/Library/Application Support/entra"
+  else
+    dir="${XDG_CONFIG_HOME:-$HOME/.config}/entra"
+  fi
+  file="$dir/config.json"
+  [ -f "$file" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg field "$1" --arg account "${ENTRA_ACCOUNT:-}" '
+    (if $account != "" then $account else (.default_account // "") end) as $who
+    | [(.clients // {}) | to_entries[]
+       | select((.key | ascii_downcase) == ($who | ascii_downcase))
+       | .value[$field] // empty][0] // empty' "$file"
+}
 
-if [ -z "${GROUP_OBJECT_ID:-}" ] &&
-  [ -z "${ASSIGN_USERS:-}" ] &&
-  [ "${ALLOW_ALL_TENANT_USERS:-}" != "1" ]; then
-  echo "error: no user or group assignment configured." >&2
-  echo "Set GROUP_OBJECT_ID or ASSIGN_USERS to restrict access." >&2
-  echo "To intentionally allow every tenant user, set ALLOW_ALL_TENANT_USERS=1." >&2
+TENANT_ID="${TENANT_ID:-${ENTRA_TENANT_ID:-$(saved_registration tenant_id)}}"
+if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = common ]; then
+  echo "error: no directory (tenant) ID." >&2
+  echo "Set TENANT_ID or ENTRA_TENANT_ID, or sign in once with entra auth login --tenant-id." >&2
   exit 1
 fi
+CLIENT_ID="${CLIENT_ID:-${ENTRA_CLIENT_ID:-$(saved_registration client_id)}}"
+APP_NAME="${APP_NAME:-Entra CLI (read-only directory lookups)}"
+SCOPES="${SCOPES:-offline_access User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All User-LifeCycleInfo.Read.All}"
+GRAPH_SP="00000003-0000-0000-c000-000000000000"
+echo "==> Tenant: $TENANT_ID"
 
 current_tenant=$(az account show --query tenantId -o tsv 2>/dev/null || true)
 if [ "$current_tenant" != "$TENANT_ID" ]; then
@@ -56,14 +84,48 @@ if [ "$current_tenant" != "$TENANT_ID" ]; then
   exit 1
 fi
 
-echo "==> Creating app registration '$APP_NAME' (single-tenant public client)"
-APP_ID=$(az ad app create \
-  --display-name "$APP_NAME" \
-  --sign-in-audience AzureADMyOrg \
-  --public-client-redirect-uris "http://localhost/callback" \
-  --is-fallback-public-client true \
-  --query appId -o tsv)
+# An existing registration that already requires assignment is restricted, so
+# a re-run that only adds permissions needs no new assignment.
+already_restricted=false
+if [ -n "$CLIENT_ID" ]; then
+  if ! az ad app show --id "$CLIENT_ID" --query appId -o tsv >/dev/null 2>&1; then
+    echo "error: no app registration '$CLIENT_ID' in tenant $TENANT_ID." >&2
+    echo "Check CLIENT_ID / ENTRA_CLIENT_ID, or unset both to create a new registration." >&2
+    exit 1
+  fi
+  required=$(az ad sp show --id "$CLIENT_ID" --query appRoleAssignmentRequired -o tsv 2>/dev/null || true)
+  [ "$required" = true ] && already_restricted=true
+fi
+
+if [ -z "${GROUP_OBJECT_ID:-}" ] &&
+  [ -z "${ASSIGN_USERS:-}" ] &&
+  [ "$already_restricted" != true ] &&
+  [ "${ALLOW_ALL_TENANT_USERS:-}" != "1" ]; then
+  echo "error: no user or group assignment configured." >&2
+  echo "Set GROUP_OBJECT_ID or ASSIGN_USERS to restrict access." >&2
+  echo "To intentionally allow every tenant user, set ALLOW_ALL_TENANT_USERS=1." >&2
+  exit 1
+fi
+
+if [ -n "$CLIENT_ID" ]; then
+  echo "==> Updating existing app registration $CLIENT_ID"
+  APP_ID="$CLIENT_ID"
+else
+  echo "==> Creating app registration '$APP_NAME' (single-tenant public client)"
+  APP_ID=$(az ad app create \
+    --display-name "$APP_NAME" \
+    --sign-in-audience AzureADMyOrg \
+    --public-client-redirect-uris "http://localhost/callback" \
+    --is-fallback-public-client true \
+    --query appId -o tsv)
+fi
 echo "    appId: $APP_ID"
+
+# `az ad app permission add` appends without checking for duplicates, so a
+# re-run adds only the delegated permissions the registration does not hold.
+existing=$(az ad app show --id "$APP_ID" \
+  --query "requiredResourceAccess[?resourceAppId=='$GRAPH_SP'].resourceAccess[] | [?type=='Scope'].id" \
+  -o tsv 2>/dev/null || true)
 
 echo "==> Resolving Graph delegated-permission IDs for: $SCOPES"
 perms=()
@@ -74,13 +136,21 @@ for scope in $SCOPES; do
     echo "error: could not resolve Graph delegated scope '$scope'" >&2
     exit 1
   fi
+  if printf '%s\n' "$existing" | grep -qixF -- "$perm_id"; then
+    echo "    $scope = $perm_id (already present)"
+    continue
+  fi
   echo "    $scope = $perm_id"
   perms+=("$perm_id=Scope")
 done
 
-echo "==> Adding API permissions to the app registration"
-az ad app permission add --id "$APP_ID" --api "$GRAPH_SP" --api-permissions "${perms[@]}" \
-  --only-show-errors
+if [ "${#perms[@]}" -gt 0 ]; then
+  echo "==> Adding ${#perms[@]} API permission(s) to the app registration"
+  az ad app permission add --id "$APP_ID" --api "$GRAPH_SP" --api-permissions "${perms[@]}" \
+    --only-show-errors
+else
+  echo "==> Every requested API permission is already present"
+fi
 
 echo "==> Creating service principal (Enterprise application)"
 # Re-running this script is a normal thing to do; adding a second person to
@@ -164,6 +234,8 @@ if [ "$restrict" = true ]; then
     echo "    assigning user $upn ($user_id)"
     assign_principal "$user_id"
   done
+elif [ "$already_restricted" = true ]; then
+  echo "==> No new assignment given; existing assignments are unchanged and still required."
 else
   echo "==> No assignment given; 'Assignment required' was left unchanged."
   echo "    On a new app that means any tenant user may sign in through it."

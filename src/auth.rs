@@ -21,6 +21,7 @@ pub const SCOPE_USER: &str = "User.Read";
 pub const SCOPE_USER_READ_BASIC_ALL: &str = "User.ReadBasic.All";
 pub const SCOPE_USER_READ_ALL: &str = "User.Read.All";
 pub const SCOPE_AUDIT_LOG_READ_ALL: &str = "AuditLog.Read.All";
+pub const SCOPE_USER_LIFECYCLE_READ_ALL: &str = "User-LifeCycleInfo.Read.All";
 pub const SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
 const AUTHORITY_BASE: &str = "https://login.microsoftonline.com";
@@ -39,6 +40,22 @@ pub fn directory_scopes() -> Vec<String> {
     let mut scopes = default_scopes();
     scopes.extend([SCOPE_USER_READ_ALL, SCOPE_AUDIT_LOG_READ_ALL].map(str::to_owned));
     scopes
+}
+
+/// The scopes a login or refresh asks for. `directory` adds full profiles and
+/// sign-in activity; `lifecycle` adds full profiles and the employee leave
+/// date, which Graph returns empty rather than refusing when this permission
+/// is missing. Both need administrator consent.
+pub fn requested_scopes(directory: bool, lifecycle: bool, extras: &[String]) -> Vec<String> {
+    let mut base = if directory {
+        directory_scopes()
+    } else {
+        default_scopes()
+    };
+    if lifecycle {
+        base.extend([SCOPE_USER_READ_ALL, SCOPE_USER_LIFECYCLE_READ_ALL].map(str::to_owned));
+    }
+    merge_scopes(base, extras)
 }
 
 pub fn merge_scopes(base: Vec<String>, extras: &[String]) -> Vec<String> {
@@ -900,6 +917,35 @@ mod tests {
                 "User.ReadBasic.All",
                 "User.Read.All",
                 "AuditLog.Read.All"
+            ]
+        );
+    }
+
+    #[test]
+    fn lifecycle_scope_is_opt_in_and_brings_full_profiles() {
+        assert_eq!(requested_scopes(true, false, &[]), directory_scopes());
+        assert!(!requested_scopes(true, false, &[])
+            .iter()
+            .any(|scope| scope == SCOPE_USER_LIFECYCLE_READ_ALL));
+        assert_eq!(
+            requested_scopes(false, true, &[]),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "User-LifeCycleInfo.Read.All"
+            ]
+        );
+        assert_eq!(
+            requested_scopes(true, true, &["user-lifecycleinfo.read.all".into()]),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "AuditLog.Read.All",
+                "User-LifeCycleInfo.Read.All"
             ]
         );
     }

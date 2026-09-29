@@ -26,17 +26,23 @@ See [auth.md](auth.md) for which fields fall on each side of that line.
 ## Auth
 
 ```text
-entra auth login --client-id ID [--browser] [--directory] [--tenant-id ID] [--scope SCOPE]...
-entra auth refresh [--directory] [--scope SCOPE]...
+entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--tenant-id ID] [--scope SCOPE]...
+entra auth refresh [--directory] [--lifecycle] [--scope SCOPE]...
 entra auth logout [EMAIL]
 entra auth list
 entra auth status
 ```
 
-`--client-id` is required at login and has no default. `--directory` requests
+Login takes the client ID from `--client-id` or `ENTRA_CLIENT_ID`, and the
+tenant ID from `--tenant-id` or `ENTRA_TENANT_ID`. Without them it reuses the
+registration saved at an earlier login (see
+[auth.md](auth.md#sign-in)), so only the first sign-in needs them. `--directory` requests
 `User.Read.All` and `AuditLog.Read.All`; without it, manager, reporting-line and
 sign-in-activity lookups will not work. Sign-in activity additionally requires
 an eligible licence and a supported role on the signed-in account.
+`--lifecycle` requests `User-LifeCycleInfo.Read.All`, without which Graph
+returns every employee leave date as `null`; the signed-in account also needs
+Lifecycle Workflows Administrator, Global Reader or Global Administrator.
 `auth refresh` silently redeems the selected account's stored refresh token.
 With no scope flags it retains the stored scope set; flags request an explicit
 scope upgrade after the matching consent has been granted.
@@ -103,7 +109,7 @@ Attributes are organised into groups, and `--group` fetches only what you need:
 |---|---|
 | `identity` | Names, sign-in name, object id, user type, security identifier |
 | `addresses` | `mail`, `otherMails`, `proxyAddresses`, `imAddresses`, phone numbers |
-| `organisation` | Job title, department, company, employee id and type, hire and leave dates |
+| `organisation` | Job title, department, company, employee id and type, hire and leave dates (the leave date needs `--lifecycle`, see [auth.md](auth.md)) |
 | `location` | Street address through to usage and data-residency location |
 | `account` | Enabled state, created and deleted timestamps, creation type, guest state |
 | `credentials` | Last password change, password policies, token validity cut-offs |
