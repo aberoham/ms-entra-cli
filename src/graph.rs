@@ -14,8 +14,14 @@ const MAX_QUERY_LENGTH: usize = 256;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ATTEMPTS: usize = 3;
 const MAX_PAGES: usize = 1_000;
+// Graph's page ceilings for a user collection, which is lower when the query
+// selects signInActivity. An expanded relationship draws smaller pages still,
+// which Graph imposes on its own.
+const LIST_PAGE_SIZE: &str = "999";
+const SIGN_IN_ACTIVITY_PAGE_SIZE: &str = "500";
+const MANAGER_EXPANSION: &str = "manager($select=id,displayName,userPrincipalName,accountEnabled)";
 
-const PROFILE_FIELDS: &[&str] = &[
+pub const PROFILE_FIELDS: &[&str] = &[
     "id",
     "displayName",
     "givenName",
@@ -281,6 +287,56 @@ impl GraphClient {
             })
     }
 
+    /// Lists every user in the directory with the summary profile fields.
+    pub async fn list_users(&self) -> Result<Vec<User>> {
+        let url = self.list_url(PROFILE_FIELDS, None)?;
+        self.get_all_pages(url, None).await.map_err(|error| {
+            if error.is_permission() {
+                error.permission("list directory users")
+            } else {
+                error.context("listing directory users")
+            }
+        })
+    }
+
+    /// Lists every user as an unmapped record holding `properties`.
+    ///
+    /// Every record carries every requested property, as `null` where Graph
+    /// left it out (it omits `signInActivity` for anyone with no recorded
+    /// sign-in), so all records share one set of keys. With `manager`, each
+    /// record also carries a `manager` key: `null` when the directory holds no
+    /// manager, otherwise the manager's id, display name, sign-in name and
+    /// enabled state.
+    pub async fn list_user_records(
+        &self,
+        properties: &[&str],
+        manager: bool,
+    ) -> Result<Vec<BTreeMap<String, Value>>> {
+        if properties.is_empty() {
+            return Err(EntraError::message("no properties requested"));
+        }
+        let expand = manager.then_some(MANAGER_EXPANSION);
+        let url = self.list_url(properties, expand)?;
+        let mut records: Vec<BTreeMap<String, Value>> =
+            self.get_all_pages(url, None).await.map_err(|error| {
+                if error.is_authorization_failure() {
+                    attribute_permission(error, properties)
+                } else {
+                    error.context("listing directory users")
+                }
+            })?;
+        for record in &mut records {
+            record.remove("@odata.context");
+            for property in properties {
+                record.entry((*property).to_owned()).or_insert(Value::Null);
+            }
+            if manager {
+                normalise_manager(record);
+            }
+        }
+        Ok(records)
+    }
+
     pub async fn me(&self) -> Result<User> {
         let mut url = self.collection_url("me")?;
         url.query_pairs_mut()
@@ -408,6 +464,24 @@ impl GraphClient {
         Ok(url)
     }
 
+    fn list_url(&self, properties: &[&str], expand: Option<&str>) -> Result<Url> {
+        let page_size = if properties.contains(&"signInActivity") {
+            SIGN_IN_ACTIVITY_PAGE_SIZE
+        } else {
+            LIST_PAGE_SIZE
+        };
+        let mut url = self.collection_url("users")?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("$select", &properties.join(","));
+            if let Some(expand) = expand {
+                query.append_pair("$expand", expand);
+            }
+            query.append_pair("$top", page_size);
+        }
+        Ok(url)
+    }
+
     fn collection_url(&self, segment: &str) -> Result<Url> {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
@@ -501,6 +575,17 @@ impl GraphClient {
         }
         Err(EntraError::message("Graph request exhausted its retries"))
     }
+}
+
+/// Gives every listed record an explicit `manager` value. Graph omits the key
+/// or sends null when nobody is recorded, and tags an expanded manager with
+/// an `@odata.type` that says nothing a caller needs.
+fn normalise_manager(record: &mut BTreeMap<String, Value>) {
+    let mut manager = record.remove("manager").unwrap_or(Value::Null);
+    if let Value::Object(fields) = &mut manager {
+        fields.remove("@odata.type");
+    }
+    record.insert("manager".into(), manager);
 }
 
 fn attribute_permission(error: EntraError, properties: &[&str]) -> EntraError {
@@ -788,5 +873,202 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn list_follows_next_links_and_requests_full_pages() {
+        let server = MockServer::start().await;
+        let second_page = format!("{}/v1.0/users?page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "999"))
+            .and(query_param("$select", "id,mail"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "one", "mail": "one@example.test"}],
+                "@odata.nextLink": second_page
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "two", "mail": "two@example.test"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let records = client(&server)
+            .await
+            .list_user_records(&["id", "mail"], false)
+            .await
+            .unwrap();
+        let ids: Vec<_> = records.iter().map(|record| record["id"].clone()).collect();
+        assert_eq!(ids, [json!("one"), json!("two")]);
+        assert!(records.iter().all(|record| !record.contains_key("manager")));
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().all(|request| !request
+            .url
+            .query()
+            .unwrap_or("")
+            .contains("expand")));
+    }
+
+    #[tokio::test]
+    async fn listed_managers_are_expanded_and_normalised() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    {"id": "absent"},
+                    {"id": "null", "manager": null},
+                    {"id": "set", "manager": {
+                        "@odata.type": "#microsoft.graph.user",
+                        "id": "boss",
+                        "accountEnabled": false
+                    }}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let records = client(&server)
+            .await
+            .list_user_records(&["id"], true)
+            .await
+            .unwrap();
+        assert_eq!(records[0]["manager"], Value::Null);
+        assert_eq!(records[1]["manager"], Value::Null);
+        assert_eq!(
+            records[2]["manager"],
+            json!({"id": "boss", "accountEnabled": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn list_refusal_on_a_later_page_is_an_authorization_failure() {
+        let server = MockServer::start().await;
+        let second_page = format!("{}/v1.0/users?page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "999"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "one"}],
+                "@odata.nextLink": second_page
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = client(&server).await.list_users().await.unwrap_err();
+        assert!(error.is_authorization_failure());
+        assert_eq!(error.metadata(), ("Authorization_RequestDenied", 403));
+    }
+
+    #[tokio::test]
+    async fn listing_sign_in_activity_without_a_role_names_the_role() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "500"))
+            .and(query_param("$expand", MANAGER_EXPANSION))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {
+                    "code": "Authentication_RequestFromUnsupportedUserRole",
+                    "message": "User is not in the allowed roles"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .list_user_records(&["id", "signInActivity"], true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Reports Reader"));
+        assert_eq!(
+            error.metadata(),
+            ("Authentication_RequestFromUnsupportedUserRole", 403)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_query_and_decoding_failures_do_not_become_permission_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$select", "id"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"code": "Request_UnsupportedQuery", "message": "Unsupported query."}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$select", "mail"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let graph = client(&server).await;
+        let unsupported = graph.list_user_records(&["id"], false).await.unwrap_err();
+        assert!(!unsupported.is_authorization_failure());
+        assert_eq!(unsupported.metadata(), ("Request_UnsupportedQuery", 400));
+        let malformed = graph.list_user_records(&["mail"], false).await.unwrap_err();
+        assert!(!malformed.is_authorization_failure());
+        assert!(malformed.to_string().contains("listing directory users"));
+    }
+
+    #[tokio::test]
+    async fn every_listed_record_carries_every_requested_property() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    {"id": "active", "signInActivity": {"lastSignInDateTime": "2026-01-01T00:00:00Z"}},
+                    {"id": "never"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let records = client(&server)
+            .await
+            .list_user_records(&["id", "mail", "signInActivity"], false)
+            .await
+            .unwrap();
+        for record in &records {
+            let keys: Vec<_> = record.keys().map(String::as_str).collect();
+            assert_eq!(keys, ["id", "mail", "signInActivity"]);
+        }
+        assert_eq!(records[1]["signInActivity"], Value::Null);
+        assert!(records[0]["signInActivity"].is_object());
+    }
+
+    #[tokio::test]
+    async fn empty_directory_lists_no_users() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .mount(&server)
+            .await;
+
+        assert!(client(&server).await.list_users().await.unwrap().is_empty());
     }
 }

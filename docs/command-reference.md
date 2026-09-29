@@ -18,6 +18,7 @@ feeds the directory — not in a lookup tool.
 | `entra user manager` | `User.Read.All` |
 | `entra user reports` | `User.Read.All` |
 | `entra user chain` | `User.Read.All` |
+| `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
 | `entra auth *` | none beyond sign-in |
 
 See [auth.md](auth.md) for which fields fall on each side of that line.
@@ -25,17 +26,23 @@ See [auth.md](auth.md) for which fields fall on each side of that line.
 ## Auth
 
 ```text
-entra auth login --client-id ID [--browser] [--directory] [--tenant-id ID] [--scope SCOPE]...
-entra auth refresh [--directory] [--scope SCOPE]...
+entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--tenant-id ID] [--scope SCOPE]...
+entra auth refresh [--directory] [--lifecycle] [--scope SCOPE]...
 entra auth logout [EMAIL]
 entra auth list
 entra auth status
 ```
 
-`--client-id` is required at login and has no default. `--directory` requests
+Login takes the client ID from `--client-id` or `ENTRA_CLIENT_ID`, and the
+tenant ID from `--tenant-id` or `ENTRA_TENANT_ID`. Without them it reuses the
+registration saved at an earlier login (see
+[auth.md](auth.md#sign-in)), so only the first sign-in needs them. `--directory` requests
 `User.Read.All` and `AuditLog.Read.All`; without it, manager, reporting-line and
 sign-in-activity lookups will not work. Sign-in activity additionally requires
 an eligible licence and a supported role on the signed-in account.
+`--lifecycle` requests `User-LifeCycleInfo.Read.All`, without which Graph
+returns every employee leave date as `null`; the signed-in account also needs
+Lifecycle Workflows Administrator, Global Reader or Global Administrator.
 `auth refresh` silently redeems the selected account's stored refresh token.
 With no scope flags it retains the stored scope set; flags request an explicit
 scope upgrade after the matching consent has been granted.
@@ -102,7 +109,7 @@ Attributes are organised into groups, and `--group` fetches only what you need:
 |---|---|
 | `identity` | Names, sign-in name, object id, user type, security identifier |
 | `addresses` | `mail`, `otherMails`, `proxyAddresses`, `imAddresses`, phone numbers |
-| `organisation` | Job title, department, company, employee id and type, hire and leave dates |
+| `organisation` | Job title, department, company, employee id and type, hire and leave dates (the leave date needs `--lifecycle`, see [auth.md](auth.md)) |
 | `location` | Street address through to usage and data-residency location |
 | `account` | Enabled state, created and deleted timestamps, creation type, guest state |
 | `credentials` | Last password change, password policies, token validity cut-offs |
@@ -134,6 +141,49 @@ lists the valid ones.
 Navigation properties — `manager`, `directReports`, `memberOf` and the like —
 are relationships rather than attributes and are not part of these groups.
 Graph rejects a `$select` mixing the two. They have their own commands.
+
+## Listing the whole directory
+
+```text
+entra user list [--all] [--group GROUP]... [--sign-in-activity] [--manager]
+```
+
+`user list` reads every user in the directory, one page after another, and
+writes nothing until the last page has arrived. With no flags it prints the
+same summary columns as `user search`, in any output format.
+
+The flags turn it into an export of unmapped Graph records, written as JSON
+only; any of them without `--json` is rejected before signing in.
+
+| Flag | Adds |
+|---|---|
+| `--all` | Every attribute in the groups above |
+| `--group GROUP` | Only these groups (repeatable; wins over `--all`) |
+| `--sign-in-activity` | `signInActivity`, alongside the summary fields when used alone |
+| `--manager` | A `manager` object on every record: `id`, `displayName`, `userPrincipalName` and `accountEnabled`, or `null` when none is recorded |
+
+Every record carries its object `id`, whichever groups are chosen, so records
+can be joined to each other. A manager's `id` matches the `id` of that
+person's own record, which is how a script walks management lines without a
+request per person. Every record also carries every property the flags
+select, as `null` where Graph has no value; Graph itself leaves
+`signInActivity` out for anyone who has never signed in. All records
+therefore share one set of keys, which suits `jq`, data frames and CSV.
+
+If any page fails, the command exits 1 and writes nothing to standard output,
+so a script can never mistake a partial directory for a whole one.
+
+```bash
+entra user list --all --manager --json --results-only > directory.json
+```
+
+With `--sign-in-activity`, a refused request fails the whole command. It does
+not drop the column and carry on, as `user get --all --sign-in-activity` does,
+because an export missing data it was asked for would look complete to the
+script reading it.
+
+The export is not wrapped by `--wrap-untrusted`, the same as deep `user get`
+output; the summary list is.
 
 ## Global flags
 
@@ -181,4 +231,7 @@ entra user reports manager@example.com --plain
 
 # Resolve a half-remembered name.
 entra user search "jane"
+
+# Everyone, with their managers, for a script to analyse.
+entra user list --manager --json --results-only
 ```

@@ -239,8 +239,19 @@ If the refresh token is no longer valid, sign in again with `entra auth login`.
 ## Rate limiting
 
 Graph throttles directory reads. `user chain` makes one request per level, so a
-deep hierarchy across many people adds up. If you are sweeping the whole
-directory, add your own pacing between calls — this tool does not batch.
+deep hierarchy across many people adds up. To sweep the whole directory, use
+`user list` rather than a loop of lookups: it reads in pages and retries
+throttled or failed requests a bounded number of times, honouring
+`Retry-After`. A connection cut off partway through a response is not retried;
+run the command again.
+
+## `user list --manager` is slower than `user list`
+
+Graph serves up to 999 users per page for a plain list, but in testing served
+only 100 per page once the manager relationship was expanded, so the same
+directory takes about ten times as many requests. Selecting sign-in activity
+caps pages at 500. Neither changes the result, only the time taken. `--timeout`
+applies to each request, not the whole run.
 
 ## Nothing works and the tenant looks wrong
 

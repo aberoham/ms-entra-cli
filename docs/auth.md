@@ -51,11 +51,14 @@ act as the signed-in person, so it can never read more than that person could.
 | `User.Read` | No | `entra whoami`; every sign-in | Your own profile |
 | `offline_access` | No | Every command after the first hour | Nothing; it issues a refresh token so you do not sign in every hour |
 | `User.ReadBasic.All` | No | `entra user search`, basic `entra user get` | Display name, given name, surname, mail, sign-in name, object ID and photo for every user |
-| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
-| `AuditLog.Read.All` | **Yes** | `entra user get --sign-in-activity` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
+| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
+| `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
+| `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
 
-`entra auth login --directory` requests all five. Without `--directory`, the
-tool requests only the first three.
+`entra auth login --directory` requests the first five. Without `--directory`,
+the tool requests only the first three. `--lifecycle` adds
+`User-LifeCycleInfo.Read.All` (and `User.Read.All`), and combines with
+`--directory`.
 
 The tool does not request `Directory.Read.All`, `Group.Read.All` or any write
 permission. It cannot change a directory object.
@@ -71,8 +74,26 @@ also requires:
 
 Without these, Graph fails the whole request. For this reason the
 `signInActivity` field is opt-in per query, and `entra` retries a full-record
-request without it. The attribute is also empty for anyone who has never
-signed in, or whose last sign-in was before April 2020.
+`user get` without it. `user list` does not: it fails, so that an export never
+silently lacks a column it was asked for. The attribute is also empty for
+anyone who has never signed in, or whose last sign-in was before April 2020.
+
+### The leave date needs its own permission and a role
+
+`employeeLeaveDateTime`, in `--all` and the `organisation` group, is populated
+only when the token holds `User-LifeCycleInfo.Read.All` and the signed-in
+account holds Lifecycle Workflows Administrator, Global Reader or Global
+Administrator. Without either, Graph still answers the request and returns the
+field as `null`, so an empty leave date proves nothing on its own. Sign in (or
+refresh) with `--lifecycle` once an administrator has consented:
+
+```bash
+entra auth refresh --directory --lifecycle
+```
+
+The permission is opt-in rather than part of `--directory` because a login
+that asks for an unconsented permission fails outright, which would break
+`--directory` in every directory that has not granted it.
 
 `AuditLog.Read.All` grants read access to all of the tenant's sign-in and audit
 logs, not just one field. If you do not need sign-in activity, leave it out:
@@ -164,14 +185,27 @@ The script understands these variables:
 
 | Variable | Effect |
 |---|---|
-| `TENANT_ID` | Required. The directory the app is created in. |
+| `TENANT_ID` | The directory the app is created in. Falls back to `ENTRA_TENANT_ID`, then to the tenant saved by the last `entra auth login`. |
+| `CLIENT_ID` | An existing registration to update in place. Falls back to `ENTRA_CLIENT_ID`, then to the saved client ID; when none is known, the script creates or updates a registration by `APP_NAME`. |
 | `APP_NAME` | Display name; defaults to "Entra CLI (read-only directory lookups)". |
-| `SCOPES` | Space-separated scope list; defaults to the five permissions above. |
+| `SCOPES` | Space-separated scope list; defaults to the six permissions above. |
 | `GROUP_OBJECT_ID` | Assign a group, and require assignment. |
 | `ASSIGN_USERS` | Space-separated sign-in names to assign, and require assignment. |
 | `ALLOW_ALL_TENANT_USERS=1` | Allow any tenant user. Not the default. |
 
 #### Running the script again
+
+After the first successful `entra auth login`, running the script again needs
+no IDs: it reads the saved tenant and client ID from `entra`'s `config.json`
+(for `ENTRA_ACCOUNT`, else the default account; this needs `jq`) and updates
+that exact registration, even if it was given another name. A registration
+that already requires assignment needs no new assignment variables, so adding
+a permission is one command:
+
+```bash
+./contrib/create-entra-app.sh
+entra auth refresh --directory --lifecycle
+```
 
 The script is safe to run again, for example to assign another person. It
 patches the existing registration instead of creating a duplicate, reuses the
@@ -210,8 +244,9 @@ tsv` prints it.
    this setting.
 7. Go to **API permissions > Add a permission > Microsoft Graph > Delegated
    permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All`,
-   `User.Read.All` and `AuditLog.Read.All`. Leave out `AuditLog.Read.All` if
-   you do not need sign-in activity.
+   `User.Read.All`, `AuditLog.Read.All` and `User-LifeCycleInfo.Read.All`.
+   Leave out `AuditLog.Read.All` if you do not need sign-in activity, and
+   `User-LifeCycleInfo.Read.All` if you do not need leave dates.
 8. Select **Grant admin consent for \<your organisation\>** and confirm. The
    **Status** column must show a green tick for every permission.
    `User.Read.All` and `AuditLog.Read.All` do not work until this is done.
@@ -260,9 +295,28 @@ If `auth status` succeeds and `user manager` fails, the sign-in worked but
 
 ## Sign in
 
-Use the two IDs from the app registration. `--client-id` is required and has
-no default. Always pass `--tenant-id` for a single-tenant app: without it the
-tool uses the `common` endpoint, which a single-tenant app rejects.
+Use the two IDs from the app registration. `entra` has no registration of its
+own. At login it takes the client ID from, in order:
+
+1. `--client-id`, or the `ENTRA_CLIENT_ID` environment variable;
+2. the registration saved at an earlier login for the account named by
+   `--account`, or else for the default account;
+3. the registration every saved account shares, when they all use one.
+
+The tenant ID follows the same order through `--tenant-id` and
+`ENTRA_TENANT_ID`, and falls back to the `common` endpoint, which a
+single-tenant app rejects. The first sign-in therefore needs both IDs; signing
+in again, for example after a password reset revokes the stored token, needs
+neither. Login prints the registration and tenant it is about to use on
+standard error, naming the saved account when it reuses one, so a stale value
+is visible.
+
+The IDs are saved in `config.json` in the configuration directory, not in the
+operating-system keyring with the token, so the arrangement is the same on
+macOS, Linux and Windows. Neither ID is a secret. An organisation can also set
+both variables for its staff, through a shell profile or device management.
+Commands after login read the IDs saved with the account and ignore the
+variables.
 
 Device code is the default. The tool prints a code and a web address; open the
 address on any device, enter the code and choose the account:
@@ -389,6 +443,8 @@ token the directory still accepts.
 
 | Variable | Equivalent flag |
 |---|---|
+| `ENTRA_CLIENT_ID` | `auth login --client-id` |
+| `ENTRA_TENANT_ID` | `auth login --tenant-id` |
 | `ENTRA_ACCOUNT` | `--account` |
 | `ENTRA_JSON` | `--json` |
 | `ENTRA_PLAIN` | `--plain` |

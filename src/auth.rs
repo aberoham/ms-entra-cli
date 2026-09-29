@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ pub const SCOPE_USER: &str = "User.Read";
 pub const SCOPE_USER_READ_BASIC_ALL: &str = "User.ReadBasic.All";
 pub const SCOPE_USER_READ_ALL: &str = "User.Read.All";
 pub const SCOPE_AUDIT_LOG_READ_ALL: &str = "AuditLog.Read.All";
+pub const SCOPE_USER_LIFECYCLE_READ_ALL: &str = "User-LifeCycleInfo.Read.All";
 pub const SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
 const AUTHORITY_BASE: &str = "https://login.microsoftonline.com";
@@ -39,6 +40,22 @@ pub fn directory_scopes() -> Vec<String> {
     let mut scopes = default_scopes();
     scopes.extend([SCOPE_USER_READ_ALL, SCOPE_AUDIT_LOG_READ_ALL].map(str::to_owned));
     scopes
+}
+
+/// The scopes a login or refresh asks for. `directory` adds full profiles and
+/// sign-in activity; `lifecycle` adds full profiles and the employee leave
+/// date, which Graph returns empty rather than refusing when this permission
+/// is missing. Both need administrator consent.
+pub fn requested_scopes(directory: bool, lifecycle: bool, extras: &[String]) -> Vec<String> {
+    let mut base = if directory {
+        directory_scopes()
+    } else {
+        default_scopes()
+    };
+    if lifecycle {
+        base.extend([SCOPE_USER_READ_ALL, SCOPE_USER_LIFECYCLE_READ_ALL].map(str::to_owned));
+    }
+    merge_scopes(base, extras)
 }
 
 pub fn merge_scopes(base: Vec<String>, extras: &[String]) -> Vec<String> {
@@ -398,9 +415,9 @@ impl Authenticator {
     }
 
     pub fn logout(&self, email: &str) -> Result<()> {
+        let path = account_file_path(email)?;
         delete_value(self.store.as_ref(), &token_key(email))
             .map_err(|error| error.context(format!("deleting token for {email}")))?;
-        let path = account_file_path(email)?;
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -587,6 +604,9 @@ impl Authenticator {
                 "profile response contained no mail or userPrincipalName",
             ));
         }
+        // Checked before the token is stored, so a refused address never
+        // leaves a credential with no account file to find it by.
+        account_file_path(&email)?;
         self.store_token(
             &email,
             &TokenData {
@@ -787,13 +807,27 @@ fn sanitize_multiline(value: &str) -> String {
         .collect()
 }
 
+/// The account file for an address. The address becomes a file name, so any
+/// character that separates paths or is invalid in a Windows file name is
+/// refused outright; rewriting it instead would let two different addresses
+/// share one file. Everything else an address may hold, such as `!`, `#` in
+/// guest sign-in names, or non-ASCII letters, is kept.
 fn account_file_path(email: &str) -> Result<PathBuf> {
-    let lowered = email.to_ascii_lowercase().replace("..", "_");
-    let safe = Path::new(&lowered)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| EntraError::message("account address is not a safe file name"))?;
-    Ok(config::accounts_dir()?.join(format!("{safe}.json")))
+    const UNSAFE: &str = "/\\:*?\"<>|";
+    let lowered = email.trim().to_ascii_lowercase();
+    let safe = !lowered.is_empty()
+        && !lowered.starts_with('.')
+        && !lowered.ends_with('.')
+        && !lowered.contains("..")
+        && !lowered
+            .chars()
+            .any(|character| character.is_control() || UNSAFE.contains(character));
+    if !safe {
+        return Err(EntraError::message(format!(
+            "account address {email:?} cannot be used as a file name"
+        )));
+    }
+    Ok(config::accounts_dir()?.join(format!("{lowered}.json")))
 }
 
 fn save_account(info: &AccountInfo) -> Result<()> {
@@ -900,6 +934,92 @@ mod tests {
                 "User.ReadBasic.All",
                 "User.Read.All",
                 "AuditLog.Read.All"
+            ]
+        );
+    }
+
+    #[test]
+    fn account_files_are_named_only_by_plain_addresses() {
+        let file = |email: &str| {
+            account_file_path(email)
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        };
+        assert_eq!(
+            file(" Alex.Smith@Example.test ").unwrap(),
+            "alex.smith@example.test.json"
+        );
+        assert_eq!(
+            file("person_example.com#EXT#@tenant.onmicrosoft.com").unwrap(),
+            "person_example.com#ext#@tenant.onmicrosoft.com.json"
+        );
+        for valid in [
+            "o'brien@example.test",
+            "alex!smith@example.test",
+            "a~b^c$d%e&f=g{h}i`j@example.test",
+            "zoë@example.test",
+        ] {
+            assert_eq!(file(valid).unwrap(), format!("{valid}.json"));
+        }
+        for unsafe_address in [
+            "",
+            "../victim@example.test",
+            "evil/ben@example.test",
+            "evil\\ben@example.test",
+            "c:ben@example.test",
+            "ben?@example.test",
+            "ben|x@example.test",
+            ".hidden@example.test",
+            "trailing@example.test.",
+            "a..b@example.test",
+            "ben\u{0}@example.test",
+        ] {
+            assert!(file(unsafe_address).is_err(), "{unsafe_address:?}");
+        }
+    }
+
+    #[test]
+    fn refused_logout_address_leaves_the_stored_token_alone() {
+        let account = "evil/ben@example.test";
+        let store = Arc::new(MemoryStore::default());
+        store
+            .set_password(&token_key(account), r#"{"refresh_token":"kept"}"#)
+            .unwrap();
+        let auth = Authenticator::new(
+            store.clone(),
+            "00000000-0000-4000-8000-000000000001",
+            "common",
+        )
+        .unwrap();
+
+        assert!(auth.logout(account).is_err());
+        assert!(store.get_password(&token_key(account)).is_ok());
+    }
+
+    #[test]
+    fn lifecycle_scope_is_opt_in_and_brings_full_profiles() {
+        assert_eq!(requested_scopes(true, false, &[]), directory_scopes());
+        assert!(!requested_scopes(true, false, &[])
+            .iter()
+            .any(|scope| scope == SCOPE_USER_LIFECYCLE_READ_ALL));
+        assert_eq!(
+            requested_scopes(false, true, &[]),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "User-LifeCycleInfo.Read.All"
+            ]
+        );
+        assert_eq!(
+            requested_scopes(true, true, &["user-lifecycleinfo.read.all".into()]),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "AuditLog.Read.All",
+                "User-LifeCycleInfo.Read.All"
             ]
         );
     }
