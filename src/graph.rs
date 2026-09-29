@@ -301,9 +301,12 @@ impl GraphClient {
 
     /// Lists every user as an unmapped record holding `properties`.
     ///
-    /// With `manager`, each record also carries a `manager` key: `null` when
-    /// the directory holds no manager, otherwise the manager's id, display
-    /// name, sign-in name and enabled state.
+    /// Every record carries every requested property, as `null` where Graph
+    /// left it out (it omits `signInActivity` for anyone with no recorded
+    /// sign-in), so all records share one set of keys. With `manager`, each
+    /// record also carries a `manager` key: `null` when the directory holds no
+    /// manager, otherwise the manager's id, display name, sign-in name and
+    /// enabled state.
     pub async fn list_user_records(
         &self,
         properties: &[&str],
@@ -324,6 +327,9 @@ impl GraphClient {
             })?;
         for record in &mut records {
             record.remove("@odata.context");
+            for property in properties {
+                record.entry((*property).to_owned()).or_insert(Value::Null);
+            }
             if manager {
                 normalise_manager(record);
             }
@@ -1025,6 +1031,33 @@ mod tests {
         let malformed = graph.list_user_records(&["mail"], false).await.unwrap_err();
         assert!(!malformed.is_authorization_failure());
         assert!(malformed.to_string().contains("listing directory users"));
+    }
+
+    #[tokio::test]
+    async fn every_listed_record_carries_every_requested_property() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    {"id": "active", "signInActivity": {"lastSignInDateTime": "2026-01-01T00:00:00Z"}},
+                    {"id": "never"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let records = client(&server)
+            .await
+            .list_user_records(&["id", "mail", "signInActivity"], false)
+            .await
+            .unwrap();
+        for record in &records {
+            let keys: Vec<_> = record.keys().map(String::as_str).collect();
+            assert_eq!(keys, ["id", "mail", "signInActivity"]);
+        }
+        assert_eq!(records[1]["signInActivity"], Value::Null);
+        assert!(records[0]["signInActivity"].is_object());
     }
 
     #[tokio::test]

@@ -165,7 +165,13 @@ only; any of them without `--json` is rejected before signing in.
 Every record carries its object `id`, whichever groups are chosen, so records
 can be joined to each other. A manager's `id` matches the `id` of that
 person's own record, which is how a script walks management lines without a
-request per person.
+request per person. Every record also carries every property the flags
+select, as `null` where Graph has no value; Graph itself leaves
+`signInActivity` out for anyone who has never signed in. All records
+therefore share one set of keys, which suits `jq`, data frames and CSV.
+
+If any page fails, the command exits 1 and writes nothing to standard output,
+so a script can never mistake a partial directory for a whole one.
 
 ```bash
 entra user list --all --manager --json --results-only > directory.json
