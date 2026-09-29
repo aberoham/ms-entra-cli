@@ -72,6 +72,14 @@ From `v0.1.1`, the macOS binaries are Developer ID signed and notarized by
 Apple. Gatekeeper accepts a browser-downloaded copy after an online check the
 first time it runs. Check the archive against `checksums-sha256.txt` as usual.
 
+From `v0.2.0`, every release archive also carries a build provenance
+attestation, which proves it was built by this repository's release workflow
+from the tagged commit. With the GitHub CLI:
+
+```bash
+gh attestation verify entra-<version>-<target>.tar.gz --repo aberoham/ms-entra-cli
+```
+
 To build from source you need a current stable Rust toolchain:
 
 ```bash
