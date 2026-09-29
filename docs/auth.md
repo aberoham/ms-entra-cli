@@ -51,8 +51,8 @@ act as the signed-in person, so it can never read more than that person could.
 | `User.Read` | No | `entra whoami`; every sign-in | Your own profile |
 | `offline_access` | No | Every command after the first hour | Nothing; it issues a refresh token so you do not sign in every hour |
 | `User.ReadBasic.All` | No | `entra user search`, basic `entra user get` | Display name, given name, surname, mail, sign-in name, object ID and photo for every user |
-| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
-| `AuditLog.Read.All` | **Yes** | `entra user get --sign-in-activity` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
+| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
+| `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
 
 `entra auth login --directory` requests all five. Without `--directory`, the
 tool requests only the first three.
@@ -71,8 +71,16 @@ also requires:
 
 Without these, Graph fails the whole request. For this reason the
 `signInActivity` field is opt-in per query, and `entra` retries a full-record
-request without it. The attribute is also empty for anyone who has never
-signed in, or whose last sign-in was before April 2020.
+`user get` without it. `user list` does not: it fails, so that an export never
+silently lacks a column it was asked for. The attribute is also empty for
+anyone who has never signed in, or whose last sign-in was before April 2020.
+
+### One attribute needs a permission `entra` does not request
+
+`employeeLeaveDateTime`, in `--all` and the `organisation` group, is populated
+only for callers who also hold `User-LifeCycleInfo.Read.All` and a supported
+role. Without them Graph still answers the request, so `entra` does not
+request that permission; the field is simply not reliable in its output.
 
 `AuditLog.Read.All` grants read access to all of the tenant's sign-in and audit
 logs, not just one field. If you do not need sign-in activity, leave it out:

@@ -9,6 +9,7 @@ entra user manager jane.doe@example.com
 entra user chain jane.doe@example.com
 entra user get shared-inbox@example.com   # every alias, primary marked
 entra user search "jane"
+entra user list --manager --json          # everyone, with their managers
 ```
 
 Read-only. There is no write path: changing a person's manager belongs in the

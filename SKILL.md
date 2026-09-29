@@ -82,8 +82,17 @@ entra user manager <upn|email|id>     That person's manager
 entra user reports <upn|email|id>     Everyone reporting to them
 entra user chain <upn|email|id>       Management line upwards, indented
 entra user search <query> [-n 25]     Find people by name or address prefix
+entra user list                       Everyone in the directory
+entra user list --all --manager --json
+                                      Every record and its manager, for scripts
 entra auth login|refresh|logout|list|status
 ```
+
+`user list --all`, `--group`, `--sign-in-activity` and `--manager` write JSON
+only. `--manager` gives each record a `manager` object (`id`, `displayName`,
+`userPrincipalName`, `accountEnabled`) or `null`, so a whole directory's
+management lines can be analysed from one export instead of a lookup per
+person.
 
 `--json`, `--plain` and `--select field,field` control output. Set
 `--wrap-untrusted` when output feeds a language model: display names and job

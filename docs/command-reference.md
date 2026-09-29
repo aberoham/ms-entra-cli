@@ -18,6 +18,7 @@ feeds the directory — not in a lookup tool.
 | `entra user manager` | `User.Read.All` |
 | `entra user reports` | `User.Read.All` |
 | `entra user chain` | `User.Read.All` |
+| `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
 | `entra auth *` | none beyond sign-in |
 
 See [auth.md](auth.md) for which fields fall on each side of that line.
@@ -135,6 +136,43 @@ Navigation properties — `manager`, `directReports`, `memberOf` and the like �
 are relationships rather than attributes and are not part of these groups.
 Graph rejects a `$select` mixing the two. They have their own commands.
 
+## Listing the whole directory
+
+```text
+entra user list [--all] [--group GROUP]... [--sign-in-activity] [--manager]
+```
+
+`user list` reads every user in the directory, one page after another, and
+writes nothing until the last page has arrived. With no flags it prints the
+same summary columns as `user search`, in any output format.
+
+The flags turn it into an export of unmapped Graph records, written as JSON
+only; any of them without `--json` is rejected before signing in.
+
+| Flag | Adds |
+|---|---|
+| `--all` | Every attribute in the groups above |
+| `--group GROUP` | Only these groups (repeatable; wins over `--all`) |
+| `--sign-in-activity` | `signInActivity`, alongside the summary fields when used alone |
+| `--manager` | A `manager` object on every record: `id`, `displayName`, `userPrincipalName` and `accountEnabled`, or `null` when none is recorded |
+
+Every record carries its object `id`, whichever groups are chosen, so records
+can be joined to each other. A manager's `id` matches the `id` of that
+person's own record, which is how a script walks management lines without a
+request per person.
+
+```bash
+entra user list --all --manager --json --results-only > directory.json
+```
+
+With `--sign-in-activity`, a refused request fails the whole command. It does
+not drop the column and carry on, as `user get --all --sign-in-activity` does,
+because an export missing data it was asked for would look complete to the
+script reading it.
+
+The export is not wrapped by `--wrap-untrusted`, the same as deep `user get`
+output; the summary list is.
+
 ## Global flags
 
 | Flag | Effect |
@@ -181,4 +219,7 @@ entra user reports manager@example.com --plain
 
 # Resolve a half-remembered name.
 entra user search "jane"
+
+# Everyone, with their managers, for a script to analyse.
+entra user list --manager --json --results-only
 ```
