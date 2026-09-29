@@ -7,6 +7,7 @@
 - Reuse the app registration saved at an earlier login when neither flags nor environment variables supply one, so signing in again after a revoked token needs no IDs.
 - Add `--lifecycle` to `auth login` and `auth refresh`, requesting `User-LifeCycleInfo.Read.All` so the employee leave date is populated; the setup script now includes that permission.
 - Let `contrib/create-entra-app.sh` reuse the saved or environment tenant and client IDs, update a known registration in place, and skip the assignment requirement when the registration already enforces one.
+- Refuse account addresses that are unsafe as file names instead of rewriting them, so two addresses can no longer share one account file.
 
 ## v0.1.1 - 2026-09-27
 
