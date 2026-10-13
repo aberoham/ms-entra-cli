@@ -1,13 +1,14 @@
 # entra
 
 Microsoft Entra ID directory lookups from the command line: a person's
-manager, their direct reports, the management chain above them, and the
-extended attributes on their record.
+manager, their direct reports, the management chain above them, the groups
+they belong to, and the extended attributes on their record.
 
 ```bash
 entra user manager jane.doe@example.com
 entra user chain jane.doe@example.com
 entra user get shared-inbox@example.com   # every alias, primary marked
+entra user groups jane.doe@example.com --kind distribution
 entra user search "jane"
 entra user list --manager --json          # everyone, with their managers
 ```
@@ -128,7 +129,8 @@ entra user get you@example.com
 `--directory` requests `User.Read.All` and `AuditLog.Read.All`. Both need
 administrator consent. Sign-in activity (`--sign-in-activity`) also needs a
 Microsoft Entra ID P1 or P2 licence and a supported role, such as Reports
-Reader, on the signed-in account.
+Reader, on the signed-in account. `user groups` needs `GroupMember.Read.All`,
+which `--groups` requests; it also needs administrator consent.
 
 When `--account` is omitted, user commands try the default signed-in account
 first. If Graph returns a typed permission or role refusal, `entra` tries the

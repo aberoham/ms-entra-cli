@@ -54,11 +54,12 @@ act as the signed-in person, so it can never read more than that person could.
 | `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
 | `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
 | `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
+| `GroupMember.Read.All` | **Yes** | `entra user groups` | Every group's basic properties and its membership |
 
 `entra auth login --directory` requests the first five. Without `--directory`,
 the tool requests only the first three. `--lifecycle` adds
-`User-LifeCycleInfo.Read.All` (and `User.Read.All`), and combines with
-`--directory`.
+`User-LifeCycleInfo.Read.All` (and `User.Read.All`), and `--groups` adds
+`GroupMember.Read.All` (and `User.Read.All`). Both combine with `--directory`.
 
 The tool does not request `Directory.Read.All`, `Group.Read.All` or any write
 permission. It cannot change a directory object.
@@ -94,6 +95,22 @@ entra auth refresh --directory --lifecycle
 The permission is opt-in rather than part of `--directory` because a login
 that asks for an unconsented permission fails outright, which would break
 `--directory` in every directory that has not granted it.
+
+### Group memberships need their own permission
+
+`user groups` reads `memberOf` and `transitiveMemberOf`. With `User.Read.All`
+alone, Graph answers those requests but strips each group to its id and type,
+so the tool needs `GroupMember.Read.All` to name the groups. It reports a
+nameless group as a permission error rather than printing it. Once an
+administrator has consented, refresh with both flags so the directory
+permissions are kept:
+
+```bash
+entra auth refresh --directory --groups
+```
+
+Like `--lifecycle`, it stays outside `--directory` because a login that asks
+for an unconsented permission fails outright.
 
 `AuditLog.Read.All` grants read access to all of the tenant's sign-in and audit
 logs, not just one field. If you do not need sign-in activity, leave it out:
@@ -244,9 +261,10 @@ tsv` prints it.
    this setting.
 7. Go to **API permissions > Add a permission > Microsoft Graph > Delegated
    permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All`,
-   `User.Read.All`, `AuditLog.Read.All` and `User-LifeCycleInfo.Read.All`.
-   Leave out `AuditLog.Read.All` if you do not need sign-in activity, and
-   `User-LifeCycleInfo.Read.All` if you do not need leave dates.
+   `User.Read.All`, `AuditLog.Read.All`, `User-LifeCycleInfo.Read.All` and
+   `GroupMember.Read.All`. Leave out `AuditLog.Read.All` if you do not need
+   sign-in activity, `User-LifeCycleInfo.Read.All` if you do not need leave
+   dates, and `GroupMember.Read.All` if you do not need group memberships.
 8. Select **Grant admin consent for \<your organisation\>** and confirm. The
    **Status** column must show a green tick for every permission.
    `User.Read.All` and `AuditLog.Read.All` do not work until this is done.
@@ -465,5 +483,7 @@ token the directory still accepts.
 - [Restrict an application to a set of users](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users)
 - [User.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#userreadall)
 - [AuditLog.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#auditlogreadall)
+- [GroupMember.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#groupmemberreadall)
+- [List a user's direct memberships](https://learn.microsoft.com/en-us/graph/api/user-list-memberof)
 - [Roles allowed to read sign-in activity](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph#common-errors)
 - [List a user's manager](https://learn.microsoft.com/en-us/graph/api/user-list-manager)

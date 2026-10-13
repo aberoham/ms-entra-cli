@@ -66,6 +66,8 @@ entra auth login --browser --directory \
 - `--lifecycle` adds `User-LifeCycleInfo.Read.All`. Without it (and a role
   such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
   not evidence that nobody is leaving.
+- `--groups` adds `GroupMember.Read.All`, which `user groups` needs. Refresh
+  with `--directory --groups` together, or the directory scopes are dropped.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.
@@ -88,6 +90,8 @@ entra user get <upn|email|id> --sign-in-activity
 entra user manager <upn|email|id>     That person's manager
 entra user reports <upn|email|id>     Everyone reporting to them
 entra user chain <upn|email|id>       Management line upwards, indented
+entra user groups <upn|email|id> [--kind distribution|mail-security|m365|security]
+                                      Groups they belong to, direct or nested
 entra user search <query> [-n 25]     Find people by name or address prefix
 entra user list                       Everyone in the directory
 entra user list --all --manager --json

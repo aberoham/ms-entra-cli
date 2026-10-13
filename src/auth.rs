@@ -21,6 +21,7 @@ pub const SCOPE_USER: &str = "User.Read";
 pub const SCOPE_USER_READ_BASIC_ALL: &str = "User.ReadBasic.All";
 pub const SCOPE_USER_READ_ALL: &str = "User.Read.All";
 pub const SCOPE_AUDIT_LOG_READ_ALL: &str = "AuditLog.Read.All";
+pub const SCOPE_GROUP_MEMBER_READ_ALL: &str = "GroupMember.Read.All";
 pub const SCOPE_USER_LIFECYCLE_READ_ALL: &str = "User-LifeCycleInfo.Read.All";
 pub const SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
@@ -42,18 +43,32 @@ pub fn directory_scopes() -> Vec<String> {
     scopes
 }
 
+/// The optional permission sets a login or refresh can add to the defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScopeFlags {
+    pub directory: bool,
+    pub lifecycle: bool,
+    pub groups: bool,
+}
+
 /// The scopes a login or refresh asks for. `directory` adds full profiles and
 /// sign-in activity; `lifecycle` adds full profiles and the employee leave
 /// date, which Graph returns empty rather than refusing when this permission
-/// is missing. Both need administrator consent.
-pub fn requested_scopes(directory: bool, lifecycle: bool, extras: &[String]) -> Vec<String> {
-    let mut base = if directory {
+/// is missing; `groups` adds full profiles and group memberships. All three
+/// need administrator consent. `lifecycle` and `groups` stay outside
+/// `directory` because a login that asks for an unconsented permission fails
+/// outright, which would break `directory` wherever they have not been granted.
+pub fn requested_scopes(flags: ScopeFlags, extras: &[String]) -> Vec<String> {
+    let mut base = if flags.directory {
         directory_scopes()
     } else {
         default_scopes()
     };
-    if lifecycle {
+    if flags.lifecycle {
         base.extend([SCOPE_USER_READ_ALL, SCOPE_USER_LIFECYCLE_READ_ALL].map(str::to_owned));
+    }
+    if flags.groups {
+        base.extend([SCOPE_USER_READ_ALL, SCOPE_GROUP_MEMBER_READ_ALL].map(str::to_owned));
     }
     merge_scopes(base, extras)
 }
@@ -997,12 +1012,20 @@ mod tests {
 
     #[test]
     fn lifecycle_scope_is_opt_in_and_brings_full_profiles() {
-        assert_eq!(requested_scopes(true, false, &[]), directory_scopes());
-        assert!(!requested_scopes(true, false, &[])
+        let directory = ScopeFlags {
+            directory: true,
+            ..ScopeFlags::default()
+        };
+        let lifecycle = ScopeFlags {
+            lifecycle: true,
+            ..ScopeFlags::default()
+        };
+        assert_eq!(requested_scopes(directory, &[]), directory_scopes());
+        assert!(!requested_scopes(directory, &[])
             .iter()
             .any(|scope| scope == SCOPE_USER_LIFECYCLE_READ_ALL));
         assert_eq!(
-            requested_scopes(false, true, &[]),
+            requested_scopes(lifecycle, &[]),
             vec![
                 "offline_access",
                 "User.Read",
@@ -1012,7 +1035,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            requested_scopes(true, true, &["user-lifecycleinfo.read.all".into()]),
+            requested_scopes(
+                ScopeFlags {
+                    directory: true,
+                    lifecycle: true,
+                    ..ScopeFlags::default()
+                },
+                &["user-lifecycleinfo.read.all".into()]
+            ),
             vec![
                 "offline_access",
                 "User.Read",
@@ -1020,6 +1050,52 @@ mod tests {
                 "User.Read.All",
                 "AuditLog.Read.All",
                 "User-LifeCycleInfo.Read.All"
+            ]
+        );
+    }
+
+    #[test]
+    fn group_scope_is_opt_in_and_brings_full_profiles() {
+        let groups = ScopeFlags {
+            groups: true,
+            ..ScopeFlags::default()
+        };
+        assert!(!requested_scopes(
+            ScopeFlags {
+                directory: true,
+                lifecycle: true,
+                groups: false
+            },
+            &[]
+        )
+        .iter()
+        .any(|scope| scope == SCOPE_GROUP_MEMBER_READ_ALL));
+        assert_eq!(
+            requested_scopes(groups, &[]),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "GroupMember.Read.All"
+            ]
+        );
+        assert_eq!(
+            requested_scopes(
+                ScopeFlags {
+                    directory: true,
+                    groups: true,
+                    ..ScopeFlags::default()
+                },
+                &[]
+            ),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "AuditLog.Read.All",
+                "GroupMember.Read.All"
             ]
         );
     }
