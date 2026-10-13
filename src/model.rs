@@ -122,6 +122,8 @@ pub struct User {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
+    #[serde(rename = "@odata.type", default, deserialize_with = "null_to_default")]
+    pub odata_type: String,
     #[serde(default, deserialize_with = "null_to_default")]
     pub id: String,
     #[serde(default, deserialize_with = "null_to_default")]
@@ -193,6 +195,10 @@ impl Membership {
 }
 
 impl Group {
+    pub fn is_group(&self) -> bool {
+        self.odata_type == "#microsoft.graph.group"
+    }
+
     /// Classifies the group the way Exchange and Entra administrators name
     /// them. A `Unified` group type marks a Microsoft 365 group whatever its
     /// flags say; the remaining kinds follow from the two enabled flags.

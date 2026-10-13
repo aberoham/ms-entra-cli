@@ -492,15 +492,17 @@ impl GraphClient {
         self.get_all_pages(url, None).await
     }
 
+    /// Reads one membership relationship and keeps only the groups. The
+    /// relationship also returns directory roles and administrative units;
+    /// they are filtered here rather than with an OData cast, because Graph
+    /// documents a cast on these routes as an advanced query that needs
+    /// `$count` and a `ConsistencyLevel` header on every page.
     async fn groups_direct(&self, key: &str, relation: &str) -> Result<Vec<Group>> {
         let mut url = self.user_relation_url(key, relation)?;
-        url.path_segments_mut()
-            .map_err(|_| EntraError::message("Graph base URL cannot hold path segments"))?
-            .push("microsoft.graph.group");
         url.query_pairs_mut()
-            .append_pair("$select", &GROUP_FIELDS.join(","))
-            .append_pair("$top", LIST_PAGE_SIZE);
-        self.get_all_pages(url, None).await
+            .append_pair("$select", &GROUP_FIELDS.join(","));
+        let objects: Vec<Group> = self.get_all_pages(url, None).await?;
+        Ok(objects.into_iter().filter(Group::is_group).collect())
     }
 
     async fn get_all_pages<T: DeserializeOwned>(
@@ -1186,23 +1188,24 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group"
-            )))
+            .and(path(format!("/v1.0/users/{object_id}/transitiveMemberOf")))
             .and(query_param("$select", GROUP_FIELDS.join(",")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "value": [
                     group_json(list, "Example List", true, false),
-                    group_json(nested, "Example Nested", false, true)
+                    group_json(nested, "Example Nested", false, true),
+                    {
+                        "@odata.type": "#microsoft.graph.directoryRole",
+                        "id": "00000000-0000-4000-8000-0000000000a3",
+                        "displayName": "Example Role"
+                    }
                 ]
             })))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1.0/users/{object_id}/memberOf/microsoft.graph.group"
-            )))
+            .and(path(format!("/v1.0/users/{object_id}/memberOf")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "value": [group_json(list, "Example List", true, false)]
             })))
@@ -1215,7 +1218,8 @@ mod tests {
             .get_group_memberships(address)
             .await
             .unwrap();
-        assert_eq!(transitive.len(), 2);
+        let ids: Vec<_> = transitive.iter().map(|group| group.id.as_str()).collect();
+        assert_eq!(ids, [list, nested]);
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].id, list);
     }
@@ -1226,7 +1230,7 @@ mod tests {
         let object_id = "00000000-0000-4000-8000-000000000032";
         Mock::given(method("GET"))
             .and(path_regex(format!(
-                r"^/v1\.0/users/{object_id}/(transitiveMemberOf|memberOf)/microsoft\.graph\.group$"
+                r"^/v1\.0/users/{object_id}/(transitiveMemberOf|memberOf)$"
             )))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "value": [{
@@ -1253,7 +1257,7 @@ mod tests {
         let object_id = "00000000-0000-4000-8000-000000000033";
         Mock::given(method("GET"))
             .and(path(format!(
-                "/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group"
+                "/v1.0/users/{object_id}/transitiveMemberOf"
             )))
             .respond_with(ResponseTemplate::new(403).set_body_json(json!({
                 "error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges"}
@@ -1276,9 +1280,7 @@ mod tests {
         let server = MockServer::start().await;
         let object_id = "00000000-0000-4000-8000-000000000034";
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group"
-            )))
+            .and(path(format!("/v1.0/users/{object_id}/transitiveMemberOf")))
             .respond_with(ResponseTemplate::new(404).set_body_json(json!({
                 "error": {"code": "Request_ResourceNotFound", "message": "not found"}
             })))
@@ -1299,8 +1301,7 @@ mod tests {
         let object_id = "00000000-0000-4000-8000-000000000035";
         let first = "00000000-0000-4000-8000-0000000000c1";
         let second = "00000000-0000-4000-8000-0000000000c2";
-        let transitive =
-            format!("/v1.0/users/{object_id}/transitiveMemberOf/microsoft.graph.group");
+        let transitive = format!("/v1.0/users/{object_id}/transitiveMemberOf");
         Mock::given(method("GET"))
             .and(path(transitive.clone()))
             .and(query_param("page", "2"))
@@ -1312,7 +1313,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(transitive.clone()))
-            .and(query_param("$top", "999"))
+            .and(query_param("$select", GROUP_FIELDS.join(",")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "value": [group_json(first, "First", true, false)],
                 "@odata.nextLink": format!("{}{transitive}?page=2", server.uri())
@@ -1321,9 +1322,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1.0/users/{object_id}/memberOf/microsoft.graph.group"
-            )))
+            .and(path(format!("/v1.0/users/{object_id}/memberOf")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
             .mount(&server)
             .await;
