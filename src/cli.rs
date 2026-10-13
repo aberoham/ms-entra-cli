@@ -13,7 +13,7 @@ use crate::attributes::{
 use crate::auth::{requested_scopes, AccountInfo, Authenticator, ScopeFlags};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
-use crate::graph::{GraphClient, PROFILE_FIELDS};
+use crate::graph::{odata_literal, GraphClient, PROFILE_FIELDS};
 use crate::model::{GroupKind, GroupMembership, User};
 use crate::output::{
     sanitize, sanitize_multiline, write_group_memberships, write_pretty_json, write_rows,
@@ -360,6 +360,9 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
                     "user list with --all, --group, --sign-in-activity or --manager writes JSON only; add --json",
                 ));
             }
+        }
+        UserCommand::Groups { key, .. } => {
+            odata_literal(key)?;
         }
         _ => {}
     }

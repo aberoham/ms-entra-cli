@@ -188,3 +188,18 @@ fn login_and_refresh_offer_the_group_scope() {
             .stdout(predicate::str::contains("GroupMember.Read.All"));
     }
 }
+
+#[test]
+fn oversized_group_lookup_key_fails_before_authentication() {
+    let temporary = tempfile::tempdir().unwrap();
+    let key = format!("{}@example.test", "a".repeat(300));
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args(["user", "groups", key.as_str()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("query is too long"))
+        .stderr(predicate::str::contains("no authenticated accounts").not())
+        .stderr(predicate::str::contains("no account configured").not());
+}
