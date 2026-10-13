@@ -10,14 +10,14 @@ use serde_json::{json, Value};
 use crate::attributes::{
     all_properties, group_properties, AttributeGroup, ATTRIBUTE_GROUPS, SIGN_IN_ACTIVITY_GROUP,
 };
-use crate::auth::{requested_scopes, AccountInfo, Authenticator};
+use crate::auth::{requested_scopes, AccountInfo, Authenticator, ScopeFlags};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
-use crate::graph::{GraphClient, PROFILE_FIELDS};
-use crate::model::User;
+use crate::graph::{odata_literal, GraphClient, PROFILE_FIELDS};
+use crate::model::{GroupKind, GroupMembership, User};
 use crate::output::{
-    sanitize, sanitize_multiline, write_pretty_json, write_rows, write_users, OutputFormat,
-    OutputOptions,
+    sanitize, sanitize_multiline, write_group_memberships, write_pretty_json, write_rows,
+    write_users, OutputFormat, OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
@@ -155,6 +155,11 @@ struct AuthLogin {
         help = "Request User-LifeCycleInfo.Read.All so the employee leave date is populated (needs administrator consent and a supported role)"
     )]
     lifecycle: bool,
+    #[arg(
+        long,
+        help = "Request GroupMember.Read.All so 'user groups' can read group memberships (needs administrator consent)"
+    )]
+    groups: bool,
     #[arg(long, help = "Sign in via the system browser instead of device code")]
     browser: bool,
     #[arg(long, action = clap::ArgAction::Append, help = "Additional OAuth scope to request (repeatable)")]
@@ -173,6 +178,11 @@ struct AuthRefresh {
         help = "Request User-LifeCycleInfo.Read.All while refreshing (needs administrator consent)"
     )]
     lifecycle: bool,
+    #[arg(
+        long,
+        help = "Request GroupMember.Read.All while refreshing (needs administrator consent)"
+    )]
+    groups: bool,
     #[arg(
         long,
         action = clap::ArgAction::Append,
@@ -195,6 +205,12 @@ enum UserCommand {
     Manager { key: String },
     #[command(about = "Show everyone reporting to a person")]
     Reports { key: String },
+    #[command(about = "Show the groups a person belongs to, directly or through another group")]
+    Groups {
+        key: String,
+        #[arg(long, value_enum, help = "Show only groups of this kind")]
+        kind: Option<GroupKind>,
+    },
     #[command(about = "Walk the management line upwards from a person")]
     Chain {
         key: String,
@@ -345,6 +361,9 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
                 ));
             }
         }
+        UserCommand::Groups { key, .. } => {
+            odata_literal(key)?;
+        }
         _ => {}
     }
     Ok(())
@@ -363,8 +382,14 @@ async fn run_auth(
             let account = select_account(cli, store.clone(), &config, None).await?;
             let email = account.email.clone();
             let auth = authenticator_for_account(store, &config, &account)?;
-            let requested = (refresh.directory || refresh.lifecycle || !refresh.scope.is_empty())
-                .then(|| requested_scopes(refresh.directory, refresh.lifecycle, &refresh.scope));
+            let flags = ScopeFlags {
+                directory: refresh.directory,
+                lifecycle: refresh.lifecycle,
+                groups: refresh.groups,
+            };
+            let requested =
+                (flags.directory || flags.lifecycle || flags.groups || !refresh.scope.is_empty())
+                    .then(|| requested_scopes(flags, &refresh.scope));
             let token = auth
                 .refresh(&email, requested.as_deref(), cli.verbose)
                 .await
@@ -450,7 +475,14 @@ async fn run_login(cli: &Cli, store: Arc<dyn CredentialStore>, login: AuthLogin)
         &stored,
         cli.account.as_deref(),
     )?;
-    let scopes = requested_scopes(login.directory, login.lifecycle, &login.scope);
+    let scopes = requested_scopes(
+        ScopeFlags {
+            directory: login.directory,
+            lifecycle: login.lifecycle,
+            groups: login.groups,
+        },
+        &login.scope,
+    );
     let reused = registration
         .saved_with
         .as_deref()
@@ -751,6 +783,14 @@ async fn run_user(
         UserCommand::Reports { key } => {
             let reports = graph.get_direct_reports(&key).await?;
             write_users(io::stdout(), output, &reports)
+        }
+        UserCommand::Groups { key, kind } => {
+            let (transitive, direct) = graph.get_group_memberships(&key).await?;
+            let mut rows = GroupMembership::from_lists(transitive, &direct);
+            if let Some(kind) = kind {
+                rows.retain(|row| row.kind == kind);
+            }
+            write_group_memberships(io::stdout(), output, &rows)
         }
         UserCommand::Chain { key, depth } => {
             let chain = graph.get_chain(&key, depth).await?;

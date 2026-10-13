@@ -22,8 +22,8 @@ Graph message reliably sends people hunting for a typo instead. If you see the
 raw form, it came from something other than this tool.
 
 Fix: make sure an administrator has consented to the permission named in the
-error (`User.Read.All` or `AuditLog.Read.All`) for the app registration, then
-refresh the current session or log in again:
+error (`User.Read.All`, `AuditLog.Read.All` or `GroupMember.Read.All`) for the
+app registration, then refresh the current session or log in again:
 
 ```bash
 entra auth refresh --directory
@@ -31,6 +31,8 @@ entra auth login --browser --directory \
   --client-id <application-client-id> \
   --tenant-id <tenant-id>
 ```
+
+For `GroupMember.Read.All`, add `--groups` to either command.
 
 If login succeeds and the error persists, consent was never granted. See
 [auth.md](auth.md#check-that-consent-was-granted).

@@ -150,3 +150,56 @@ fn user_list_group_validation_reports_json_errors_on_stdout() {
         .stdout(predicate::str::contains("unknown attribute group"))
         .stderr(predicate::str::is_empty());
 }
+
+#[test]
+fn user_groups_offers_its_kind_filter() {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .args(["user", "groups", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--kind"))
+        .stdout(predicate::str::contains("distribution"))
+        .stdout(predicate::str::contains("mail-security"));
+}
+
+#[test]
+fn unknown_group_kind_fails_before_authentication() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args(["user", "groups", "person@example.test", "--kind", "mailing"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("mailing"))
+        .stderr(predicate::str::contains("no account configured").not());
+}
+
+#[test]
+fn login_and_refresh_offer_the_group_scope() {
+    for subcommand in ["login", "refresh"] {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        command
+            .args(["auth", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--groups"))
+            .stdout(predicate::str::contains("GroupMember.Read.All"));
+    }
+}
+
+#[test]
+fn oversized_group_lookup_key_fails_before_authentication() {
+    let temporary = tempfile::tempdir().unwrap();
+    let key = format!("{}@example.test", "a".repeat(300));
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args(["user", "groups", key.as_str()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("query is too long"))
+        .stderr(predicate::str::contains("no authenticated accounts").not())
+        .stderr(predicate::str::contains("no account configured").not());
+}

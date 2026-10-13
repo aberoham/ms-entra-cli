@@ -18,6 +18,7 @@ feeds the directory — not in a lookup tool.
 | `entra user manager` | `User.Read.All` |
 | `entra user reports` | `User.Read.All` |
 | `entra user chain` | `User.Read.All` |
+| `entra user groups` | `User.Read.All` and `GroupMember.Read.All` |
 | `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
 | `entra auth *` | none beyond sign-in |
 
@@ -26,8 +27,8 @@ See [auth.md](auth.md) for which fields fall on each side of that line.
 ## Auth
 
 ```text
-entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--tenant-id ID] [--scope SCOPE]...
-entra auth refresh [--directory] [--lifecycle] [--scope SCOPE]...
+entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--groups] [--tenant-id ID] [--scope SCOPE]...
+entra auth refresh [--directory] [--lifecycle] [--groups] [--scope SCOPE]...
 entra auth logout [EMAIL]
 entra auth list
 entra auth status
@@ -43,6 +44,7 @@ an eligible licence and a supported role on the signed-in account.
 `--lifecycle` requests `User-LifeCycleInfo.Read.All`, without which Graph
 returns every employee leave date as `null`; the signed-in account also needs
 Lifecycle Workflows Administrator, Global Reader or Global Administrator.
+`--groups` requests `GroupMember.Read.All`, which `user groups` needs.
 `auth refresh` silently redeems the selected account's stored refresh token.
 With no scope flags it retains the stored scope set; flags request an explicit
 scope upgrade after the matching consent has been granted.
@@ -59,6 +61,7 @@ entra user get <upn|email|id>
 entra user manager <upn|email|id>
 entra user reports <upn|email|id>
 entra user chain <upn|email|id> [--depth 10]
+entra user groups <upn|email|id> [--kind KIND]
 entra user search <query> [-n 25]
 ```
 
@@ -80,6 +83,35 @@ line, at `--depth`, or on a cycle. Directories do contain cycles: somebody
 recorded as their own manager, or a pair pointing at each other.
 
 `user search` matches a prefix of display name, mail, sign-in name or surname.
+
+### Group memberships
+
+`user groups` lists every group the person belongs to, including those they
+reach only through another group. Each row gives the group's name, mail
+address, kind, source and membership:
+
+| Column | Values |
+|---|---|
+| `KIND` | `distribution` (a distribution list), `mail-security` (a mail-enabled security group), `m365` (a Microsoft 365 group), `security`, or `other` |
+| `SOURCE` | `on-premises` when the group is synchronised from on-premises Active Directory, otherwise `cloud` |
+| `MEMBERSHIP` | `direct`, or `nested` when the person belongs through another group |
+
+Direct memberships come first. `--kind` keeps one kind, so
+`--kind distribution` lists only distribution lists.
+
+The source column says where the group is administered. A group synchronised
+from on-premises Active Directory is read-only in Entra and Exchange Online,
+so its membership has to change in the on-premises directory. Removing a
+nested membership means removing the group that carries it, or the person
+from that group.
+
+Two kinds of group never appear. Exchange dynamic distribution groups are
+Exchange objects with no Entra record, and an on-premises group outside the
+synchronisation scope never reaches Entra at all.
+
+Without `GroupMember.Read.All`, Graph returns each group stripped to its id
+instead of refusing. `user groups` reports that as a permission error rather
+than printing a list of nameless groups.
 
 ### Deep inspection
 
@@ -228,6 +260,9 @@ entra user get shared-inbox@example.com --json --select proxyAddresses
 
 # Everyone reporting to a manager, tab-separated.
 entra user reports manager@example.com --plain
+
+# Which distribution lists is someone on, and where are they managed?
+entra user groups jane.doe@example.com --kind distribution
 
 # Resolve a half-remembered name.
 entra user search "jane"

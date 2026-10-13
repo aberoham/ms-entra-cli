@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `entra user groups`, listing every group a person belongs to with its kind, whether it is synchronised from on-premises Active Directory, and whether the membership is direct or nested; `--kind` keeps one kind.
+- Add `--groups` to `auth login` and `auth refresh`, requesting `GroupMember.Read.All`; the setup script now includes that permission.
+
 ## v0.2.0 - 2026-09-29
 
 - Add `entra user list`, a read-only export of every user in the directory, with optional full attributes, attribute groups, sign-in activity and each person's manager.

@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::Result;
-use crate::model::User;
+use crate::model::{GroupMembership, User};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -56,6 +56,31 @@ impl OutputOptions {
         Ok(Value::Object(envelope))
     }
 
+    pub fn memberships_json_value(&self, rows: &[GroupMembership]) -> Result<Value> {
+        let (rows, notice) = if self.wrap_untrusted {
+            let id = untrusted_id();
+            (
+                rows.iter()
+                    .map(|row| row.wrap_untrusted(&id))
+                    .collect::<Vec<_>>(),
+                Some(untrusted_notice(&id)),
+            )
+        } else {
+            (rows.to_vec(), None)
+        };
+        let results = serde_json::to_value(&rows)?;
+        if self.results_only {
+            return Ok(results);
+        }
+        let mut envelope = serde_json::Map::new();
+        if let Some(notice) = notice {
+            envelope.insert("untrustedNotice".into(), Value::String(notice));
+        }
+        envelope.insert("results".into(), results);
+        envelope.insert("count".into(), Value::from(rows.len()));
+        Ok(Value::Object(envelope))
+    }
+
     pub fn user_json_value(&self, user: &User) -> Result<Value> {
         let (user, notice) = if self.wrap_untrusted {
             let id = untrusted_id();
@@ -101,6 +126,30 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
         })
         .collect();
     write_rows(&mut writer, options, &headers, &rows)
+}
+
+pub fn write_group_memberships(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    rows: &[GroupMembership],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.memberships_json_value(rows)?);
+    }
+    let headers = ["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
+    let table: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            vec![
+                sanitize(&row.display_name),
+                sanitize(&row.mail),
+                row.kind.label().to_owned(),
+                row.source.label().to_owned(),
+                row.membership.label().to_owned(),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &table)
 }
 
 pub fn write_rows(

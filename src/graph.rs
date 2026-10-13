@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::time::sleep;
 
 use crate::error::{EntraError, Result};
-use crate::model::{Page, User};
+use crate::model::{Group, Page, User};
 
 pub const GRAPH_V1: &str = "https://graph.microsoft.com/v1.0/";
 const MAX_QUERY_LENGTH: usize = 256;
@@ -42,6 +42,36 @@ pub const PROFILE_FIELDS: &[&str] = &[
     "onPremisesSamAccountName",
     "usageLocation",
 ];
+
+const GROUP_FIELDS: &[&str] = &[
+    "id",
+    "displayName",
+    "mail",
+    "mailEnabled",
+    "securityEnabled",
+    "groupTypes",
+    "onPremisesSyncEnabled",
+];
+
+fn group_permission(error: EntraError) -> EntraError {
+    error.permission_with_scope(
+        "read group memberships",
+        "GroupMember.Read.All",
+        "Have an administrator grant it, then run 'entra auth refresh --directory --groups' (or sign in again with 'entra auth login --directory --groups')",
+    )
+}
+
+fn membership_error(error: EntraError, key: &str) -> EntraError {
+    if error.is_permission() {
+        group_permission(error)
+    } else if error.is_not_found() {
+        EntraError::UserNotFound {
+            key: key.to_owned(),
+        }
+    } else {
+        error.context(format!("reading group memberships for {key:?}"))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GraphClient {
@@ -245,6 +275,49 @@ impl GraphClient {
         }
     }
 
+    /// Returns the groups a person belongs to, transitively and directly, as
+    /// two lists. An address is resolved to an object id first so that both
+    /// reads name the same person. Graph answers a token without a group-read
+    /// permission with groups stripped to their ids rather than with an error,
+    /// so a group without a display name is reported as a permission failure.
+    pub async fn get_group_memberships(&self, key: &str) -> Result<(Vec<Group>, Vec<Group>)> {
+        odata_literal(key)?;
+        let id = if key.contains('@') {
+            match self.resolve_key(key).await {
+                Ok(value) => value,
+                Err(error) if error.is_not_found() => {
+                    return Err(EntraError::UserNotFound {
+                        key: key.to_owned(),
+                    });
+                }
+                Err(error) if error.is_permission() => {
+                    return Err(error.permission("resolve the user's email address"));
+                }
+                Err(error) => {
+                    return Err(error.context(format!(
+                        "resolving {key:?} to an object id before reading group memberships"
+                    )));
+                }
+            }
+        } else {
+            key.to_owned()
+        };
+        let transitive = self.groups_direct(&id, "transitiveMemberOf").await;
+        let transitive = transitive.map_err(|error| membership_error(error, key))?;
+        let direct = self.groups_direct(&id, "memberOf").await;
+        let direct = direct.map_err(|error| membership_error(error, key))?;
+        if transitive
+            .iter()
+            .chain(&direct)
+            .any(|group| group.display_name.is_empty())
+        {
+            return Err(group_permission(EntraError::message(
+                "Graph returned groups without their names",
+            )));
+        }
+        Ok((transitive, direct))
+    }
+
     pub async fn get_chain(&self, key: &str, max_depth: usize) -> Result<Vec<User>> {
         let maximum = if max_depth == 0 { 10 } else { max_depth };
         let start = self.get_user(key).await?;
@@ -417,6 +490,19 @@ impl GraphClient {
         url.query_pairs_mut()
             .append_pair("$select", &PROFILE_FIELDS.join(","));
         self.get_all_pages(url, None).await
+    }
+
+    /// Reads one membership relationship and keeps only the groups. The
+    /// relationship also returns directory roles and administrative units;
+    /// they are filtered here rather than with an OData cast, because Graph
+    /// documents a cast on these routes as an advanced query that needs
+    /// `$count` and a `ConsistencyLevel` header on every page.
+    async fn groups_direct(&self, key: &str, relation: &str) -> Result<Vec<Group>> {
+        let mut url = self.user_relation_url(key, relation)?;
+        url.query_pairs_mut()
+            .append_pair("$select", &GROUP_FIELDS.join(","));
+        let objects: Vec<Group> = self.get_all_pages(url, None).await?;
+        Ok(objects.into_iter().filter(Group::is_group).collect())
     }
 
     async fn get_all_pages<T: DeserializeOwned>(
@@ -1070,5 +1156,183 @@ mod tests {
             .await;
 
         assert!(client(&server).await.list_users().await.unwrap().is_empty());
+    }
+
+    fn group_json(id: &str, name: &str, mail_enabled: bool, security_enabled: bool) -> Value {
+        json!({
+            "@odata.type": "#microsoft.graph.group",
+            "id": id,
+            "displayName": name,
+            "mail": null,
+            "mailEnabled": mail_enabled,
+            "securityEnabled": security_enabled,
+            "groupTypes": [],
+            "onPremisesSyncEnabled": null
+        })
+    }
+
+    #[tokio::test]
+    async fn group_memberships_resolve_an_address_and_read_both_relationships() {
+        let server = MockServer::start().await;
+        let address = "sam.jones@example.test";
+        let object_id = "00000000-0000-4000-8000-000000000031";
+        let list = "00000000-0000-4000-8000-0000000000a1";
+        let nested = "00000000-0000-4000-8000-0000000000a2";
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": object_id, "mail": address}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{object_id}/transitiveMemberOf")))
+            .and(query_param("$select", GROUP_FIELDS.join(",")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    group_json(list, "Example List", true, false),
+                    group_json(nested, "Example Nested", false, true),
+                    {
+                        "@odata.type": "#microsoft.graph.directoryRole",
+                        "id": "00000000-0000-4000-8000-0000000000a3",
+                        "displayName": "Example Role"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{object_id}/memberOf")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [group_json(list, "Example List", true, false)]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (transitive, direct) = client(&server)
+            .await
+            .get_group_memberships(address)
+            .await
+            .unwrap();
+        let ids: Vec<_> = transitive.iter().map(|group| group.id.as_str()).collect();
+        assert_eq!(ids, [list, nested]);
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].id, list);
+    }
+
+    #[tokio::test]
+    async fn groups_stripped_of_names_are_reported_as_a_missing_group_scope() {
+        let server = MockServer::start().await;
+        let object_id = "00000000-0000-4000-8000-000000000032";
+        Mock::given(method("GET"))
+            .and(path_regex(format!(
+                r"^/v1\.0/users/{object_id}/(transitiveMemberOf|memberOf)$"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{
+                    "@odata.type": "#microsoft.graph.group",
+                    "id": "00000000-0000-4000-8000-0000000000b1",
+                    "displayName": null
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .get_group_memberships(object_id)
+            .await
+            .unwrap_err();
+        assert!(error.is_permission());
+        assert!(error.to_string().contains("GroupMember.Read.All"));
+    }
+
+    #[tokio::test]
+    async fn refused_group_read_names_the_group_scope() {
+        let server = MockServer::start().await;
+        let object_id = "00000000-0000-4000-8000-000000000033";
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1.0/users/{object_id}/transitiveMemberOf"
+            )))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .get_group_memberships(object_id)
+            .await
+            .unwrap_err();
+        assert!(error.is_permission());
+        assert!(error.to_string().contains("GroupMember.Read.All"));
+        assert!(!error.to_string().contains("lacks delegated User.Read.All"));
+    }
+
+    #[tokio::test]
+    async fn unknown_object_id_for_group_memberships_is_a_missing_user() {
+        let server = MockServer::start().await;
+        let object_id = "00000000-0000-4000-8000-000000000034";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{object_id}/transitiveMemberOf")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "Request_ResourceNotFound", "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .get_group_memberships(object_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EntraError::UserNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn group_memberships_follow_next_links() {
+        let server = MockServer::start().await;
+        let object_id = "00000000-0000-4000-8000-000000000035";
+        let first = "00000000-0000-4000-8000-0000000000c1";
+        let second = "00000000-0000-4000-8000-0000000000c2";
+        let transitive = format!("/v1.0/users/{object_id}/transitiveMemberOf");
+        Mock::given(method("GET"))
+            .and(path(transitive.clone()))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [group_json(second, "Second", true, false)]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(transitive.clone()))
+            .and(query_param("$select", GROUP_FIELDS.join(",")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [group_json(first, "First", true, false)],
+                "@odata.nextLink": format!("{}{transitive}?page=2", server.uri())
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{object_id}/memberOf")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .mount(&server)
+            .await;
+
+        let (transitive, _) = client(&server)
+            .await
+            .get_group_memberships(object_id)
+            .await
+            .unwrap();
+        let ids: Vec<_> = transitive.iter().map(|group| group.id.as_str()).collect();
+        assert_eq!(ids, [first, second]);
     }
 }
