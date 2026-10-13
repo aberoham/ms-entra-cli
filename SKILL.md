@@ -90,7 +90,7 @@ entra user get <upn|email|id> --sign-in-activity
 entra user manager <upn|email|id>     That person's manager
 entra user reports <upn|email|id>     Everyone reporting to them
 entra user chain <upn|email|id>       Management line upwards, indented
-entra user groups <upn|email|id> [--kind distribution|mail-security|m365|security]
+entra user groups <upn|email|id> [--kind distribution|mail-security|m365|security|other]
                                       Groups they belong to, direct or nested
 entra user search <query> [-n 25]     Find people by name or address prefix
 entra user list                       Everyone in the directory
