@@ -5,9 +5,10 @@ use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::time::sleep;
+use uuid::Uuid;
 
 use crate::error::{EntraError, Result};
-use crate::model::{Group, Page, User};
+use crate::model::{Group, Page, SubscribedSku, User};
 
 pub const GRAPH_V1: &str = "https://graph.microsoft.com/v1.0/";
 const MAX_QUERY_LENGTH: usize = 256;
@@ -20,6 +21,7 @@ const MAX_PAGES: usize = 1_000;
 const LIST_PAGE_SIZE: &str = "999";
 const SIGN_IN_ACTIVITY_PAGE_SIZE: &str = "500";
 const MANAGER_EXPANSION: &str = "manager($select=id,displayName,userPrincipalName,accountEnabled)";
+const SKU_FIELDS: &str = "skuId,skuPartNumber,consumedUnits,prepaidUnits";
 
 pub const PROFILE_FIELDS: &[&str] = &[
     "id",
@@ -408,6 +410,38 @@ impl GraphClient {
             }
         }
         Ok(records)
+    }
+
+    /// Lists the licences the tenant subscribes to. The route accepts only
+    /// `$select`, so matching by name happens locally.
+    pub async fn list_subscribed_skus(&self) -> Result<Vec<SubscribedSku>> {
+        let mut url = self.collection_url("subscribedSkus")?;
+        url.query_pairs_mut().append_pair("$select", SKU_FIELDS);
+        self.get_all_pages(url, None).await.map_err(|error| {
+            if error.is_permission() {
+                error.licence_access()
+            } else {
+                error.context("listing the tenant's licences")
+            }
+        })
+    }
+
+    /// Lists every user holding the licence `sku_id`, disabled accounts and
+    /// guests included. The filter is built from a parsed id, so no caller
+    /// text reaches OData, and Graph serves it without advanced-query headers.
+    pub async fn list_licence_holders(&self, sku_id: Uuid) -> Result<Vec<User>> {
+        let mut url = self.list_url(PROFILE_FIELDS, None)?;
+        url.query_pairs_mut().append_pair(
+            "$filter",
+            &format!("assignedLicenses/any(x:x/skuId eq {})", sku_id.hyphenated()),
+        );
+        self.get_all_pages(url, None).await.map_err(|error| {
+            if error.is_permission() {
+                error.permission("list licence holders")
+            } else {
+                error.context("listing licence holders")
+            }
+        })
     }
 
     pub async fn me(&self) -> Result<User> {

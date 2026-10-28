@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `entra licences list`, showing each licence the tenant subscribes to with its SKU id and assigned and enabled counts.
+- Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`.
+- Add `--licences` to `auth login` and `auth refresh`, requesting `LicenseAssignment.Read.All`; the setup script now includes that permission.
+- Make `auth refresh` with scope flags add those scopes to the ones already stored, instead of replacing them, so `auth refresh --licences` no longer drops `AuditLog.Read.All` or other permissions the session held.
+
 ## v0.3.0 - 2026-10-13
 
 - Add `entra user groups`, listing every group a person belongs to with its kind, whether it is synchronised from on-premises Active Directory, and whether the membership is direct or nested; `--kind` keeps one kind.
