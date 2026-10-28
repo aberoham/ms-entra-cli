@@ -70,7 +70,9 @@ entra licences holders --sku <name|sku-id> [--by-company]
 
 `licences list` shows each licence the tenant subscribes to: its name
 (`skuPartNumber`), its SKU id, how many are assigned (`consumedUnits`) and how
-many are enabled (`prepaidUnits.enabled`), sorted by name.
+many are enabled (`prepaidUnits.enabled`), sorted by name. Its rows are
+Microsoft's licence catalogue, not text anyone in the directory can edit, so
+`--wrap-untrusted` leaves them as they are.
 
 `licences holders` lists every user who holds the licence, with name, sign-in
 name, company and department; `--json` gives the same records as `user list`.
