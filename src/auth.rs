@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::config::{self, atomic_write};
 use crate::error::{EntraError, Result};
+use crate::output::sanitize_multiline;
 use crate::secrets::{delete_value, get_value, store_value, token_key, CredentialStore};
 
 pub const SCOPE_USER: &str = "User.Read";
@@ -395,7 +396,8 @@ impl Authenticator {
             Err(error) if !data.is_hard_expired() => {
                 if verbose {
                     eprintln!(
-                        "[verbose] early token refresh failed; using the current token until its hard expiry: {error}"
+                        "[verbose] early token refresh failed; using the current token until its hard expiry: {}",
+                        sanitize_multiline(&error.to_string())
                     );
                 }
                 Ok(data.access_token)
@@ -813,13 +815,6 @@ fn oauth_error(context: &str, status: StatusCode, body: &[u8]) -> EntraError {
         };
     }
     EntraError::message(format!("{context} with status {}", status.as_u16()))
-}
-
-fn sanitize_multiline(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-        .collect()
 }
 
 /// The account file for an address. The address becomes a file name, so any

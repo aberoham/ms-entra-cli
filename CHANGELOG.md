@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remove invisible Unicode characters, such as zero-width spaces and bidirectional controls, from table, plain and detail output and from messages, so they can no longer hide characters or reorder what the terminal shows. Other non-ASCII text is kept. JSON output, including deep `--plain` records, keeps each value as Graph returned it.
+
 ## v0.3.0 - 2026-10-13
 
 - Add `entra user groups`, listing every group a person belongs to with its kind, whether it is synchronised from on-premises Active Directory, and whether the membership is direct or nested; `--kind` keeps one kind.
