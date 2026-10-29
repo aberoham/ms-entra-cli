@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::config::{self, atomic_write};
 use crate::error::{EntraError, Result};
+use crate::output::sanitize_multiline;
 use crate::secrets::{delete_value, get_value, store_value, token_key, CredentialStore};
 
 pub const SCOPE_USER: &str = "User.Read";
@@ -426,7 +427,8 @@ impl Authenticator {
                 if let Err(error) = self.store_token(email, &refreshed) {
                     if verbose {
                         eprintln!(
-                            "[verbose] refreshed token is usable but could not be persisted: {error}"
+                            "[verbose] refreshed token is usable but could not be persisted: {}",
+                            sanitize_multiline(&error.to_string())
                         );
                     }
                 }
@@ -435,7 +437,8 @@ impl Authenticator {
             Err(error) if !data.is_hard_expired() => {
                 if verbose {
                     eprintln!(
-                        "[verbose] early token refresh failed; using the current token until its hard expiry: {error}"
+                        "[verbose] early token refresh failed; using the current token until its hard expiry: {}",
+                        sanitize_multiline(&error.to_string())
                     );
                 }
                 Ok(data.access_token)
@@ -857,13 +860,6 @@ fn oauth_error(context: &str, status: StatusCode, body: &[u8]) -> EntraError {
     EntraError::message(format!("{context} with status {}", status.as_u16()))
 }
 
-fn sanitize_multiline(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-        .collect()
-}
-
 /// The account file for an address. The address becomes a file name, so any
 /// character that separates paths or is invalid in a Windows file name is
 /// refused outright; rewriting it instead would let two different addresses
@@ -916,8 +912,9 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>> {
         {
             Ok(info) => accounts.push(info),
             Err(error) => eprintln!(
-                "warning: skipping account file {:?}: {error}",
-                entry.file_name()
+                "warning: skipping account file {:?}: {}",
+                entry.file_name(),
+                sanitize_multiline(&error.to_string())
             ),
         }
     }

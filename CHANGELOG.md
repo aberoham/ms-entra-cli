@@ -9,6 +9,7 @@
 - Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.
 - Add `entra reports copilot-summary` (active users per Copilot app), `entra reports copilot-trend` (daily active users and prompts) and `entra reports settings` (whether usage reports conceal names).
 - Add `--reports` to `auth login` and `auth refresh`, requesting `Reports.Read.All` and `ReportSettings.Read.All`; the setup script now includes both.
+- Remove invisible Unicode characters, such as zero-width spaces and bidirectional controls, from table, plain and detail output and from messages, so they can no longer hide characters or reorder what the terminal shows. Other non-ASCII text is kept. JSON output, including deep `--plain` records, keeps each value as Graph returned it.
 
 ## v0.3.0 - 2026-10-13
 

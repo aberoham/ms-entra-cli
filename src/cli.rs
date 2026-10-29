@@ -558,7 +558,7 @@ async fn run_auth(
                 });
                 return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
             }
-            println!("Refreshed token for {email}");
+            println!("Refreshed token for {}", sanitize(&email));
             if !token.scope.is_empty() {
                 println!("Granted scopes: {}", sanitize(&token.scope));
             }
@@ -571,7 +571,7 @@ async fn run_auth(
             let email = account.email;
             let auth = Authenticator::new(store, "", DEFAULT_TENANT_ID)?;
             auth.logout(&email)?;
-            println!("Signed out {email}");
+            println!("Signed out {}", sanitize(&email));
             Ok(())
         }
         AuthCommand::List => {
@@ -610,7 +610,8 @@ async fn run_auth(
                 .await
                 .map_err(|error| error.context(format!("token for {email} is not usable")))?;
             println!(
-                "Account: {email}\nStatus: Authenticated as {}",
+                "Account: {}\nStatus: Authenticated as {}",
+                sanitize(&email),
                 sanitize(&me.display_name)
             );
             Ok(())
@@ -900,7 +901,7 @@ async fn run_user(
                     {
                         eprintln!(
                             "warning: sign-in activity unavailable ({}); retrying without it",
-                            error
+                            sanitize_multiline(&error.to_string())
                         );
                         get.sign_in_activity = false;
                         properties = selected_properties(&get)?;
@@ -933,7 +934,10 @@ async fn run_user(
                     write_users(io::stdout(), output, &[])
                 }
                 None => {
-                    println!("{key} has no manager recorded in the directory.");
+                    println!(
+                        "{} has no manager recorded in the directory.",
+                        sanitize(&key)
+                    );
                     Ok(())
                 }
             }
@@ -1699,7 +1703,7 @@ fn write_addresses(writer: &mut impl Write, user: &User) -> Result<()> {
         writeln!(writer, "\nMailbox addresses:")?;
         for address in &user.proxy_addresses {
             let (kind, value) = classify_proxy_address(address);
-            writeln!(writer, "  {kind:<10} {}", sanitize(&value))?;
+            writeln!(writer, "  {:<10} {}", sanitize(&kind), sanitize(&value))?;
         }
     }
     if !user.other_mails.is_empty() {
@@ -2098,6 +2102,23 @@ mod tests {
                 "admin@example.test",
                 "zulu@example.test"
             ]
+        );
+    }
+
+    #[test]
+    fn detail_view_sanitises_an_unrecognised_proxy_prefix() {
+        let user = User {
+            display_name: "Person".into(),
+            proxy_addresses: vec!["\u{202e}cus\u{200b}tom:value\u{2066}".into()],
+            ..User::default()
+        };
+        let mut written = Vec::new();
+        write_user_detail(&mut written, &user).unwrap();
+        let written = String::from_utf8(written).unwrap();
+        assert!(written.contains("custom"), "{written}");
+        assert!(
+            !written.contains(['\u{202e}', '\u{200b}', '\u{2066}']),
+            "{written:?}"
         );
     }
 
