@@ -290,6 +290,74 @@ impl GroupMembership {
     }
 }
 
+/// A licence the tenant subscribes to, as `/subscribedSkus` reports it.
+/// `skuPartNumber` is the name people type; `skuId` is the product id that
+/// user licence assignments carry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribedSku {
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub sku_id: String,
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub sku_part_number: String,
+    #[serde(default)]
+    pub consumed_units: u64,
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub prepaid_units: PrepaidUnits,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PrepaidUnits {
+    #[serde(default)]
+    pub enabled: u64,
+}
+
+/// One row of `licences holders --by-company`: a company name as the
+/// directory records it, or `None` for holders with no company, and how many
+/// holders carry it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CompanyCount {
+    pub company: Option<String>,
+    pub holders: usize,
+}
+
+impl CompanyCount {
+    /// Counts holders per company, largest first and ties by name, with the
+    /// unnamed group after every named one of the same size. Names that differ
+    /// only in surrounding whitespace are one company; case is kept as
+    /// recorded, so differently cased names stay apart.
+    pub fn tally(users: &[User]) -> Vec<Self> {
+        let mut counts: BTreeMap<Option<String>, usize> = BTreeMap::new();
+        for user in users {
+            let name = user.company_name.trim();
+            let key = (!name.is_empty()).then(|| name.to_owned());
+            *counts.entry(key).or_default() += 1;
+        }
+        let mut rows: Vec<Self> = counts
+            .into_iter()
+            .map(|(company, holders)| Self { company, holders })
+            .collect();
+        rows.sort_by(|left, right| {
+            right
+                .holders
+                .cmp(&left.holders)
+                .then_with(|| left.company.is_none().cmp(&right.company.is_none()))
+                .then_with(|| left.company.cmp(&right.company))
+        });
+        rows
+    }
+
+    pub fn wrap_untrusted(&self, id: &str) -> Self {
+        Self {
+            company: self
+                .company
+                .as_ref()
+                .map(|name| format!("[UNTRUSTED:{id}]{name}[/UNTRUSTED:{id}]")),
+            holders: self.holders,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Page<T> {
     pub value: Vec<T>,
@@ -427,6 +495,39 @@ mod tests {
         let rows = GroupMembership::from_lists(Vec::new(), &direct);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].membership, Membership::Direct);
+    }
+
+    fn employee(company: &str) -> User {
+        User {
+            company_name: company.into(),
+            ..User::default()
+        }
+    }
+
+    #[test]
+    fn company_tally_merges_blank_names_and_keeps_case_apart() {
+        let users = [
+            employee("Example"),
+            employee(" Example "),
+            employee("example"),
+            employee(""),
+            employee("   "),
+            employee("Other"),
+        ];
+        let rows: Vec<_> = CompanyCount::tally(&users)
+            .into_iter()
+            .map(|row| (row.company, row.holders))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (Some("Example".to_owned()), 2),
+                (None, 2),
+                (Some("Other".to_owned()), 1),
+                (Some("example".to_owned()), 1),
+            ]
+        );
+        assert!(CompanyCount::tally(&[]).is_empty());
     }
 
     #[test]

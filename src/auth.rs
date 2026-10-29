@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::config::{self, atomic_write};
 use crate::error::{EntraError, Result};
+use crate::output::sanitize_multiline;
 use crate::secrets::{delete_value, get_value, store_value, token_key, CredentialStore};
 
 pub const SCOPE_USER: &str = "User.Read";
@@ -23,10 +24,12 @@ pub const SCOPE_USER_READ_ALL: &str = "User.Read.All";
 pub const SCOPE_AUDIT_LOG_READ_ALL: &str = "AuditLog.Read.All";
 pub const SCOPE_GROUP_MEMBER_READ_ALL: &str = "GroupMember.Read.All";
 pub const SCOPE_USER_LIFECYCLE_READ_ALL: &str = "User-LifeCycleInfo.Read.All";
+pub const SCOPE_LICENSE_ASSIGNMENT_READ_ALL: &str = "LicenseAssignment.Read.All";
 pub const SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
 const AUTHORITY_BASE: &str = "https://login.microsoftonline.com";
 const GRAPH_ME_URL: &str = "https://graph.microsoft.com/v1.0/me";
+const GRAPH_RESOURCE_PREFIX: &str = "https://graph.microsoft.com/";
 const MAX_OAUTH_RESPONSE: usize = 100 * 1024;
 const EXPIRY_SKEW_SECS: i64 = 60;
 
@@ -49,15 +52,17 @@ pub struct ScopeFlags {
     pub directory: bool,
     pub lifecycle: bool,
     pub groups: bool,
+    pub licences: bool,
 }
 
 /// The scopes a login or refresh asks for. `directory` adds full profiles and
 /// sign-in activity; `lifecycle` adds full profiles and the employee leave
 /// date, which Graph returns empty rather than refusing when this permission
-/// is missing; `groups` adds full profiles and group memberships. All three
-/// need administrator consent. `lifecycle` and `groups` stay outside
-/// `directory` because a login that asks for an unconsented permission fails
-/// outright, which would break `directory` wherever they have not been granted.
+/// is missing; `groups` adds full profiles and group memberships; `licences`
+/// adds full profiles and the tenant's subscribed licences. All four need
+/// administrator consent. The last three stay outside `directory` because a
+/// login that asks for an unconsented permission fails outright, which would
+/// break `directory` wherever they have not been granted.
 pub fn requested_scopes(flags: ScopeFlags, extras: &[String]) -> Vec<String> {
     let mut base = if flags.directory {
         directory_scopes()
@@ -69,6 +74,9 @@ pub fn requested_scopes(flags: ScopeFlags, extras: &[String]) -> Vec<String> {
     }
     if flags.groups {
         base.extend([SCOPE_USER_READ_ALL, SCOPE_GROUP_MEMBER_READ_ALL].map(str::to_owned));
+    }
+    if flags.licences {
+        base.extend([SCOPE_USER_READ_ALL, SCOPE_LICENSE_ASSIGNMENT_READ_ALL].map(str::to_owned));
     }
     merge_scopes(base, extras)
 }
@@ -86,6 +94,25 @@ pub fn merge_scopes(base: Vec<String>, extras: &[String]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The scope string for an explicit refresh: the requested scopes, then any
+/// stored scope not among them. Microsoft may report a granted Graph scope
+/// with the resource URI in front, so that prefix is removed before the
+/// case-insensitive comparison.
+fn additive_scope(requested: &[String], stored: &str) -> String {
+    let stored: Vec<String> = stored
+        .split_whitespace()
+        .map(|scope| {
+            let lower = scope.to_ascii_lowercase();
+            if lower.starts_with(GRAPH_RESOURCE_PREFIX) {
+                scope[GRAPH_RESOURCE_PREFIX.len()..].to_owned()
+            } else {
+                scope.to_owned()
+            }
+        })
+        .collect();
+    merge_scopes(requested.to_vec(), &stored).join(" ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,7 +413,8 @@ impl Authenticator {
                 if let Err(error) = self.store_token(email, &refreshed) {
                     if verbose {
                         eprintln!(
-                            "[verbose] refreshed token is usable but could not be persisted: {error}"
+                            "[verbose] refreshed token is usable but could not be persisted: {}",
+                            sanitize_multiline(&error.to_string())
                         );
                     }
                 }
@@ -395,7 +423,8 @@ impl Authenticator {
             Err(error) if !data.is_hard_expired() => {
                 if verbose {
                     eprintln!(
-                        "[verbose] early token refresh failed; using the current token until its hard expiry: {error}"
+                        "[verbose] early token refresh failed; using the current token until its hard expiry: {}",
+                        sanitize_multiline(&error.to_string())
                     );
                 }
                 Ok(data.access_token)
@@ -406,7 +435,9 @@ impl Authenticator {
 
     /// Force a non-interactive refresh. Unlike the background refresh path,
     /// persistence failure is fatal because updating the stored credential is
-    /// the command's purpose.
+    /// the command's purpose. Requested scopes are added to the stored ones,
+    /// never substituted for them, so asking for one new permission cannot
+    /// silently drop another; signing in again is the way to narrow a token.
     pub async fn refresh(
         &self,
         email: &str,
@@ -417,7 +448,7 @@ impl Authenticator {
         let data = self.load_token(email)?;
         let explicit_scope = scopes
             .filter(|values| !values.is_empty())
-            .map(|values| values.join(" "));
+            .map(|values| additive_scope(values, &data.scope));
         let scope = explicit_scope
             .as_deref()
             .or_else(|| (!data.scope.is_empty()).then_some(data.scope.as_str()));
@@ -815,13 +846,6 @@ fn oauth_error(context: &str, status: StatusCode, body: &[u8]) -> EntraError {
     EntraError::message(format!("{context} with status {}", status.as_u16()))
 }
 
-fn sanitize_multiline(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-        .collect()
-}
-
 /// The account file for an address. The address becomes a file name, so any
 /// character that separates paths or is invalid in a Windows file name is
 /// refused outright; rewriting it instead would let two different addresses
@@ -874,8 +898,9 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>> {
         {
             Ok(info) => accounts.push(info),
             Err(error) => eprintln!(
-                "warning: skipping account file {:?}: {error}",
-                entry.file_name()
+                "warning: skipping account file {:?}: {}",
+                entry.file_name(),
+                sanitize_multiline(&error.to_string())
             ),
         }
     }
@@ -1064,7 +1089,8 @@ mod tests {
             ScopeFlags {
                 directory: true,
                 lifecycle: true,
-                groups: false
+                groups: false,
+                licences: true,
             },
             &[]
         )
@@ -1096,6 +1122,53 @@ mod tests {
                 "User.Read.All",
                 "AuditLog.Read.All",
                 "GroupMember.Read.All"
+            ]
+        );
+    }
+
+    #[test]
+    fn licence_scope_is_opt_in_and_brings_full_profiles() {
+        let everything_else = ScopeFlags {
+            directory: true,
+            lifecycle: true,
+            groups: true,
+            licences: false,
+        };
+        assert!(!requested_scopes(everything_else, &[])
+            .iter()
+            .any(|scope| scope == SCOPE_LICENSE_ASSIGNMENT_READ_ALL));
+        assert_eq!(
+            requested_scopes(
+                ScopeFlags {
+                    licences: true,
+                    ..ScopeFlags::default()
+                },
+                &[]
+            ),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "LicenseAssignment.Read.All"
+            ]
+        );
+        assert_eq!(
+            requested_scopes(
+                ScopeFlags {
+                    groups: true,
+                    licences: true,
+                    ..ScopeFlags::default()
+                },
+                &[]
+            ),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "GroupMember.Read.All",
+                "LicenseAssignment.Read.All"
             ]
         );
     }
@@ -1380,6 +1453,77 @@ mod tests {
         assert_eq!(refreshed.refresh_token, "rotated-refresh");
         assert!(refreshed.scope.contains("User.Read.All"));
         assert!(refreshed.scope.contains("AuditLog.Read.All"));
+    }
+
+    #[test]
+    fn explicit_refresh_scope_keeps_stored_scopes_without_duplicates() {
+        let requested = requested_scopes(
+            ScopeFlags {
+                licences: true,
+                ..ScopeFlags::default()
+            },
+            &[],
+        );
+        let stored =
+            "https://graph.microsoft.com/AuditLog.Read.All user.read.all openid offline_access";
+        assert_eq!(
+            additive_scope(&requested, stored),
+            "offline_access User.Read User.ReadBasic.All User.Read.All LicenseAssignment.Read.All AuditLog.Read.All openid"
+        );
+        assert_eq!(
+            additive_scope(&requested, ""),
+            requested.join(" "),
+            "an account with no stored scope asks for exactly what was requested"
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshing_with_one_flag_keeps_the_scopes_already_held() {
+        let server = MockServer::start().await;
+        let account = "person@example.test";
+        let store = Arc::new(MemoryStore::default());
+        store
+            .set_password(
+                &token_key(account),
+                r#"{"access_token":"old","refresh_token":"old-refresh","expires_at":"2030-01-01T00:00:00Z","email":"person@example.test","scope":"User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All GroupMember.Read.All offline_access"}"#,
+            )
+            .unwrap();
+        Mock::given(method("POST"))
+            .and(path("/common/oauth2/v2.0/token"))
+            .and(body_string_contains(
+                "scope=offline_access+User.Read+User.ReadBasic.All+User.Read.All+LicenseAssignment.Read.All+AuditLog.Read.All+GroupMember.Read.All",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "upgraded-access",
+                "refresh_token": "rotated-refresh",
+                "expires_in": 3600,
+                "scope": "User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All GroupMember.Read.All LicenseAssignment.Read.All"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let base = Url::parse(&format!("{}/", server.uri())).unwrap();
+        let auth = Authenticator::new(
+            store.clone(),
+            "00000000-0000-4000-8000-000000000001",
+            "common",
+        )
+        .unwrap()
+        .with_endpoints(base.clone(), base);
+        let licences_only = requested_scopes(
+            ScopeFlags {
+                licences: true,
+                ..ScopeFlags::default()
+            },
+            &[],
+        );
+
+        let refreshed = auth
+            .refresh(account, Some(&licences_only), false)
+            .await
+            .unwrap();
+        assert!(refreshed.scope.contains("AuditLog.Read.All"));
+        assert!(refreshed.scope.contains("LicenseAssignment.Read.All"));
     }
 
     #[tokio::test]
