@@ -203,3 +203,53 @@ fn oversized_group_lookup_key_fails_before_authentication() {
         .stderr(predicate::str::contains("no authenticated accounts").not())
         .stderr(predicate::str::contains("no account configured").not());
 }
+
+#[test]
+fn login_and_refresh_offer_the_licence_scope() {
+    for subcommand in ["login", "refresh"] {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        command
+            .args(["auth", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--licences"))
+            .stdout(predicate::str::contains("LicenseAssignment.Read.All"));
+    }
+}
+
+#[test]
+fn empty_licence_name_fails_before_authentication_with_json_on_stdout() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args(["licenses", "holders", "--sku", " ", "--json"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("--sku needs a licence name"))
+        .stdout(predicate::str::contains("no authenticated accounts").not())
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn licence_holders_requires_a_licence() {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .args(["licences", "holders"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--sku"));
+}
+
+#[test]
+fn login_and_refresh_offer_the_report_scopes() {
+    for subcommand in ["login", "refresh"] {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        command
+            .args(["auth", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--reports"))
+            .stdout(predicate::str::contains("Reports.Read.All"));
+    }
+}
