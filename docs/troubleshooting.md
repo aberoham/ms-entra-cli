@@ -37,9 +37,13 @@ For `GroupMember.Read.All`, add `--groups` to either command. For
 `LicenseAssignment.Read.All`, add `--licences`; if the token already holds it,
 the signed-in account also needs a role such as Directory Readers or Global
 Reader, or pass a SKU id to `licences holders --sku` instead of a name.
+For the `reports` commands, add `--reports`; if the token already holds
+`Reports.Read.All`, the signed-in account also needs a role such as Reports
+Reader, AI Administrator or Global Reader.
 
 If login succeeds and the error persists, consent was never granted, except
-for the licence read, where a missing role gives the same refusal. See
+for the licence and report reads, where a missing role gives the same
+refusal. See
 [auth.md](auth.md#check-that-consent-was-granted).
 
 ## Sign-in fails with an `AADSTS` code

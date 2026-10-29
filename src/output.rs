@@ -4,7 +4,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::Result;
-use crate::model::{CompanyCount, GroupMembership, SubscribedSku, User};
+use crate::model::{
+    CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ReportSettings, SubscribedSku, User,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -40,6 +42,14 @@ impl OutputOptions {
 
     pub fn company_counts_json_value(&self, rows: &[CompanyCount]) -> Result<Value> {
         self.wrapped_rows_json_value(rows, CompanyCount::wrap_untrusted)
+    }
+
+    pub fn copilot_usage_json_value(&self, rows: &[CopilotUsage]) -> Result<Value> {
+        self.wrapped_rows_json_value(rows, CopilotUsage::wrap_untrusted)
+    }
+
+    pub fn company_usage_json_value(&self, rows: &[CompanyUsage]) -> Result<Value> {
+        self.wrapped_rows_json_value(rows, CompanyUsage::wrap_untrusted)
     }
 
     /// Builds the result envelope for rows that carry directory free text.
@@ -210,6 +220,181 @@ pub fn write_company_counts(
         })
         .collect();
     write_rows(&mut writer, options, &headers, &rows)
+}
+
+pub fn write_copilot_usage(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    rows: &[CopilotUsage],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.copilot_usage_json_value(rows)?);
+    }
+    let headers = [
+        "NAME",
+        "SIGN-IN NAME",
+        "COMPANY",
+        "LAST ACTIVE",
+        "ACTIVE DAYS",
+        "PROMPTS",
+    ];
+    let table: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.display_name.clone(),
+                row.user_principal_name.clone(),
+                row.company_name.clone().unwrap_or_default(),
+                row.last_activity_date.clone().unwrap_or_default(),
+                row.active_days.to_string(),
+                row.prompts.to_string(),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &table)
+}
+
+pub fn write_company_usage(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    rows: &[CompanyUsage],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.company_usage_json_value(rows)?);
+    }
+    let headers = [
+        "COMPANY",
+        "USERS",
+        "ACTIVE",
+        "PROMPTS",
+        "PROMPTS PER ACTIVE USER",
+    ];
+    let table: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.company
+                    .clone()
+                    .unwrap_or_else(|| "(not set)".to_owned()),
+                row.users.to_string(),
+                row.active_users.to_string(),
+                row.prompts.to_string(),
+                per_user(row.prompts, row.active_users),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &table)
+}
+
+/// Writes the per-app adoption summary: one row per app with its active and
+/// enabled users. Graph's record is passed through unchanged in JSON.
+pub fn write_copilot_summary(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    summary: &Value,
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.json_value(summary, 1)?);
+    }
+    let adoption = &summary["adoptionByProduct"][0];
+    if options.format == OutputFormat::Table {
+        writeln!(
+            writer,
+            "Report date {}, {} days: {} prompts, {} per active user\n",
+            sanitize(summary["reportRefreshDate"].as_str().unwrap_or("unknown")),
+            adoption["reportPeriod"],
+            adoption["totalPromptsSubmitted"],
+            adoption["averagePromptsSubmitted"],
+        )?;
+    }
+    let mut table: Vec<Vec<String>> = adoption
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, active)| {
+            let app = key.strip_suffix("ActiveUsers")?;
+            let enabled = adoption[format!("{app}EnabledUsers")].as_u64().unwrap_or(0);
+            let active = active.as_u64().unwrap_or(0);
+            Some(vec![
+                app.to_owned(),
+                active.to_string(),
+                enabled.to_string(),
+                percent(active, enabled),
+            ])
+        })
+        .collect();
+    table.sort_by_key(|row| std::cmp::Reverse(row[1].parse::<u64>().unwrap_or(0)));
+    write_rows(
+        &mut writer,
+        options,
+        &["APP", "ACTIVE", "ENABLED", "ACTIVE %"],
+        &table,
+    )
+}
+
+/// Writes the daily trend in the order given, which the caller sorts oldest
+/// day first.
+pub fn write_copilot_trend(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    days: &[Value],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.json_value(&days, days.len())?);
+    }
+    let table: Vec<Vec<String>> = days
+        .iter()
+        .map(|day| {
+            let number = |key: &str| day[key].as_u64().unwrap_or(0).to_string();
+            vec![
+                day["reportDate"].as_str().unwrap_or_default().to_owned(),
+                number("anyAppActiveUsers"),
+                number("anyAppEnabledUsers"),
+                number("promptsSubmitted"),
+            ]
+        })
+        .collect();
+    write_rows(
+        &mut writer,
+        options,
+        &["DATE", "ACTIVE", "ENABLED", "PROMPTS"],
+        &table,
+    )
+}
+
+pub fn write_report_settings(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    settings: &ReportSettings,
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.json_value(settings, 1)?);
+    }
+    let concealed = if settings.display_concealed_names {
+        "yes"
+    } else {
+        "no"
+    };
+    write_rows(
+        &mut writer,
+        options,
+        &["SETTING", "VALUE"],
+        &[vec!["Concealed names in reports".into(), concealed.into()]],
+    )
+}
+
+fn per_user(total: u64, users: usize) -> String {
+    if users == 0 {
+        return "-".into();
+    }
+    (total as f64 / users as f64).round().to_string()
+}
+
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "-".into();
+    }
+    format!("{:.0}", part as f64 * 100.0 / whole as f64)
 }
 
 pub fn write_rows(

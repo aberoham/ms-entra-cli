@@ -24,6 +24,8 @@ pub const SCOPE_AUDIT_LOG_READ_ALL: &str = "AuditLog.Read.All";
 pub const SCOPE_GROUP_MEMBER_READ_ALL: &str = "GroupMember.Read.All";
 pub const SCOPE_USER_LIFECYCLE_READ_ALL: &str = "User-LifeCycleInfo.Read.All";
 pub const SCOPE_LICENSE_ASSIGNMENT_READ_ALL: &str = "LicenseAssignment.Read.All";
+pub const SCOPE_REPORTS_READ_ALL: &str = "Reports.Read.All";
+pub const SCOPE_REPORT_SETTINGS_READ_ALL: &str = "ReportSettings.Read.All";
 pub const SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
 const AUTHORITY_BASE: &str = "https://login.microsoftonline.com";
@@ -52,16 +54,18 @@ pub struct ScopeFlags {
     pub lifecycle: bool,
     pub groups: bool,
     pub licences: bool,
+    pub reports: bool,
 }
 
 /// The scopes a login or refresh asks for. `directory` adds full profiles and
 /// sign-in activity; `lifecycle` adds full profiles and the employee leave
 /// date, which Graph returns empty rather than refusing when this permission
 /// is missing; `groups` adds full profiles and group memberships; `licences`
-/// adds full profiles and the tenant's subscribed licences. All four need
-/// administrator consent. The last three stay outside `directory` because a
-/// login that asks for an unconsented permission fails outright, which would
-/// break `directory` wherever they have not been granted.
+/// adds full profiles and the tenant's subscribed licences; `reports` adds
+/// full profiles, Microsoft 365 usage reports and the report settings. All
+/// five need administrator consent. The last four stay outside `directory`
+/// because a login that asks for an unconsented permission fails outright,
+/// which would break `directory` wherever they have not been granted.
 pub fn requested_scopes(flags: ScopeFlags, extras: &[String]) -> Vec<String> {
     let mut base = if flags.directory {
         directory_scopes()
@@ -76,6 +80,16 @@ pub fn requested_scopes(flags: ScopeFlags, extras: &[String]) -> Vec<String> {
     }
     if flags.licences {
         base.extend([SCOPE_USER_READ_ALL, SCOPE_LICENSE_ASSIGNMENT_READ_ALL].map(str::to_owned));
+    }
+    if flags.reports {
+        base.extend(
+            [
+                SCOPE_USER_READ_ALL,
+                SCOPE_REPORTS_READ_ALL,
+                SCOPE_REPORT_SETTINGS_READ_ALL,
+            ]
+            .map(str::to_owned),
+        );
     }
     merge_scopes(base, extras)
 }
@@ -1094,6 +1108,7 @@ mod tests {
                 lifecycle: true,
                 groups: false,
                 licences: true,
+                reports: false,
             },
             &[]
         )
@@ -1130,12 +1145,42 @@ mod tests {
     }
 
     #[test]
+    fn report_scopes_are_opt_in_and_bring_full_profiles() {
+        assert_eq!(
+            requested_scopes(
+                ScopeFlags {
+                    reports: true,
+                    ..ScopeFlags::default()
+                },
+                &[]
+            ),
+            vec![
+                "offline_access",
+                "User.Read",
+                "User.ReadBasic.All",
+                "User.Read.All",
+                "Reports.Read.All",
+                "ReportSettings.Read.All"
+            ]
+        );
+        let directory = requested_scopes(
+            ScopeFlags {
+                directory: true,
+                ..ScopeFlags::default()
+            },
+            &[],
+        );
+        assert!(!directory.iter().any(|scope| scope.starts_with("Report")));
+    }
+
+    #[test]
     fn licence_scope_is_opt_in_and_brings_full_profiles() {
         let everything_else = ScopeFlags {
             directory: true,
             lifecycle: true,
             groups: true,
             licences: false,
+            reports: true,
         };
         assert!(!requested_scopes(everything_else, &[])
             .iter()

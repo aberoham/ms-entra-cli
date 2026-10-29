@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::error::{EntraError, Result};
-use crate::model::{Group, Page, SubscribedSku, User};
+use crate::model::{Group, Page, ReportSettings, SubscribedSku, User};
 
 pub const GRAPH_V1: &str = "https://graph.microsoft.com/v1.0/";
 const MAX_QUERY_LENGTH: usize = 256;
@@ -22,6 +22,14 @@ const LIST_PAGE_SIZE: &str = "999";
 const SIGN_IN_ACTIVITY_PAGE_SIZE: &str = "500";
 const MANAGER_EXPANSION: &str = "manager($select=id,displayName,userPrincipalName,accountEnabled)";
 const SKU_FIELDS: &str = "skuId,skuPartNumber,consumedUnits,prepaidUnits";
+const BETA_FROM_V1: &str = "../beta/";
+const COMPANY_FIELDS: &[&str] = &[
+    "id",
+    "displayName",
+    "userPrincipalName",
+    "companyName",
+    "department",
+];
 
 pub const PROFILE_FIELDS: &[&str] = &[
     "id",
@@ -444,6 +452,55 @@ impl GraphClient {
         })
     }
 
+    /// Reads one Microsoft 365 Copilot usage report function, such as
+    /// `getMicrosoft365CopilotUsageUserDetail`, for a period such as `D28`.
+    /// Both values come from fixed lists in the caller. The beta endpoint is
+    /// used because v1.0 serves these reports only as CSV and answers a JSON
+    /// request with 400 "JSON format is not supported"; beta returns paged
+    /// JSON from the same host, so pagination checks still apply.
+    pub async fn copilot_report(&self, function: &str, period: &str) -> Result<Vec<Value>> {
+        let mut url = self.base_url.join(BETA_FROM_V1)?;
+        url.path_segments_mut()
+            .map_err(|_| EntraError::message("Graph base URL cannot hold path segments"))?
+            .pop_if_empty()
+            .push("copilot")
+            .push("reports")
+            .push(&format!("{function}(period='{period}')"));
+        self.get_all_pages(url, None)
+            .await
+            .map_err(|error| report_refusal(error, "reading the Copilot usage report"))
+    }
+
+    /// Reads the tenant's report settings. `displayConcealedNames` is true
+    /// when usage reports replace names and addresses with opaque codes.
+    pub async fn report_settings(&self) -> Result<ReportSettings> {
+        let mut url = self.collection_url("admin")?;
+        url.path_segments_mut()
+            .map_err(|_| EntraError::message("Graph base URL cannot hold path segments"))?
+            .push("reportSettings");
+        let mut body: Value = self
+            .get_json(url)
+            .await
+            .map_err(|error| report_refusal(error, "reading the report settings"))?;
+        if body["value"].is_object() {
+            body = body["value"].take();
+        }
+        Ok(serde_json::from_value(body)?)
+    }
+
+    /// Lists every user's sign-in name, company and department, for joining
+    /// usage report rows to the directory.
+    pub async fn list_user_companies(&self) -> Result<Vec<User>> {
+        let url = self.list_url(COMPANY_FIELDS, None)?;
+        self.get_all_pages(url, None).await.map_err(|error| {
+            if error.is_permission() {
+                error.permission("list users' companies")
+            } else {
+                error.context("listing users' companies")
+            }
+        })
+    }
+
     pub async fn me(&self) -> Result<User> {
         let mut url = self.collection_url("me")?;
         url.query_pairs_mut()
@@ -734,6 +791,17 @@ pub fn odata_literal(value: &str) -> Result<String> {
         return Err(EntraError::message("query contains a control character"));
     }
     Ok(value.replace('\'', "''"))
+}
+
+/// Usage-report routes refuse a missing scope or role with 403 and codes
+/// such as `S2SUnauthorized` or `UnknownError` rather than
+/// `Authorization_RequestDenied`, so the status decides.
+fn report_refusal(error: EntraError, operation: &str) -> EntraError {
+    if error.is_permission() || error.metadata().1 == 403 {
+        error.reports_access()
+    } else {
+        error.context(operation)
+    }
 }
 
 #[cfg(test)]

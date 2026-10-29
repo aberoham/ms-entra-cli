@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,10 +15,13 @@ use crate::auth::{requested_scopes, AccountInfo, Authenticator, ScopeFlags};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
 use crate::graph::{odata_literal, GraphClient, PROFILE_FIELDS};
-use crate::model::{CompanyCount, GroupKind, GroupMembership, SubscribedSku, User};
+use crate::model::{
+    CompanyCount, CompanyUsage, CopilotUsage, GroupKind, GroupMembership, SubscribedSku, User,
+};
 use crate::output::{
-    sanitize, sanitize_multiline, write_company_counts, write_group_memberships,
-    write_licence_holders, write_pretty_json, write_rows, write_skus, write_users, OutputFormat,
+    sanitize, sanitize_multiline, write_company_counts, write_company_usage, write_copilot_summary,
+    write_copilot_trend, write_copilot_usage, write_group_memberships, write_licence_holders,
+    write_pretty_json, write_report_settings, write_rows, write_skus, write_users, OutputFormat,
     OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
@@ -116,6 +119,8 @@ enum Command {
         visible_alias = "licenses"
     )]
     Licences(LicencesArgs),
+    #[command(about = "Read Microsoft 365 Copilot usage reports")]
+    Reports(ReportsArgs),
     #[command(about = "Show the signed-in user's own profile")]
     Whoami,
     #[command(about = "Show version information")]
@@ -174,6 +179,11 @@ struct AuthLogin {
         help = "Request LicenseAssignment.Read.All so 'licences' can read the tenant's licences (needs administrator consent)"
     )]
     licences: bool,
+    #[arg(
+        long,
+        help = "Request Reports.Read.All and ReportSettings.Read.All so 'reports' can read usage reports (needs administrator consent)"
+    )]
+    reports: bool,
     #[arg(long, help = "Sign in via the system browser instead of device code")]
     browser: bool,
     #[arg(long, action = clap::ArgAction::Append, help = "Additional OAuth scope to request (repeatable)")]
@@ -202,6 +212,11 @@ struct AuthRefresh {
         help = "Request LicenseAssignment.Read.All while refreshing (needs administrator consent)"
     )]
     licences: bool,
+    #[arg(
+        long,
+        help = "Request Reports.Read.All and ReportSettings.Read.All while refreshing (needs administrator consent)"
+    )]
+    reports: bool,
     #[arg(
         long,
         action = clap::ArgAction::Append,
@@ -271,6 +286,70 @@ struct LicenceHolders {
     sku: String,
     #[arg(long, help = "Count holders per company instead of listing them")]
     by_company: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ReportsArgs {
+    #[command(subcommand)]
+    command: ReportsCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum ReportsCommand {
+    #[command(about = "Per-person Microsoft 365 Copilot activity, or totals per company")]
+    CopilotUsage(CopilotUsageArgs),
+    #[command(about = "Active and enabled Copilot users per app")]
+    CopilotSummary(CopilotPeriod),
+    #[command(about = "Daily active Copilot users and prompts")]
+    CopilotTrend(CopilotPeriod),
+    #[command(about = "Show whether usage reports conceal names")]
+    Settings,
+}
+
+#[derive(Debug, Clone, Args)]
+struct CopilotPeriod {
+    #[arg(long, value_enum, ignore_case = true, default_value_t = ReportPeriod::D28, help = "Days covered by the report")]
+    period: ReportPeriod,
+}
+
+#[derive(Debug, Clone, Args)]
+struct CopilotUsageArgs {
+    #[command(flatten)]
+    period: CopilotPeriod,
+    #[arg(
+        long,
+        help = "Total users, active users and prompts per company instead of per person"
+    )]
+    by_company: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "UPPER")]
+enum ReportPeriod {
+    D7,
+    D28,
+    D90,
+    D180,
+}
+
+impl ReportPeriod {
+    fn graph_value(self) -> &'static str {
+        match self {
+            Self::D7 => "D7",
+            Self::D28 => "D28",
+            Self::D90 => "D90",
+            Self::D180 => "D180",
+        }
+    }
+
+    fn days(self) -> u64 {
+        match self {
+            Self::D7 => 7,
+            Self::D28 => 28,
+            Self::D90 => 90,
+            Self::D180 => 180,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -395,6 +474,13 @@ async fn run(mut cli: Cli) -> Result<()> {
                 .await
                 .map_err(|error| suggest_account_on_refusal(error, explicit_account))
         }
+        Command::Reports(args) => {
+            let graph = graph_client(&cli, store).await?;
+            let explicit_account = cli.account.is_some();
+            run_reports(io::stdout(), &output, &graph, args.command)
+                .await
+                .map_err(|error| suggest_account_on_refusal(error, explicit_account))
+        }
     }
 }
 
@@ -451,8 +537,13 @@ async fn run_auth(
                 lifecycle: refresh.lifecycle,
                 groups: refresh.groups,
                 licences: refresh.licences,
+                reports: refresh.reports,
             };
-            let any_flag = flags.directory || flags.lifecycle || flags.groups || flags.licences;
+            let any_flag = flags.directory
+                || flags.lifecycle
+                || flags.groups
+                || flags.licences
+                || flags.reports;
             let requested = (any_flag || !refresh.scope.is_empty())
                 .then(|| requested_scopes(flags, &refresh.scope));
             let token = auth
@@ -546,6 +637,7 @@ async fn run_login(cli: &Cli, store: Arc<dyn CredentialStore>, login: AuthLogin)
             lifecycle: login.lifecycle,
             groups: login.groups,
             licences: login.licences,
+            reports: login.reports,
         },
         &login.scope,
     );
@@ -968,6 +1060,100 @@ fn resolve_sku(skus: &[SubscribedSku], name: &str) -> Result<Uuid> {
             ids.iter().map(Uuid::to_string).collect::<Vec<_>>().join(", ")
         ))),
     }
+}
+
+const COPILOT_USER_DETAIL: &str = "getMicrosoft365CopilotUsageUserDetail";
+const COPILOT_USER_SUMMARY: &str = "getMicrosoft365CopilotUserCountSummary";
+const COPILOT_USER_TREND: &str = "getMicrosoft365CopilotUserCountTrend";
+
+/// Runs a reports command under one identity, as `licences` does. Every
+/// page is fetched before anything is written.
+async fn run_reports(
+    writer: impl Write,
+    output: &OutputOptions,
+    graph: &GraphClient,
+    command: ReportsCommand,
+) -> Result<()> {
+    match command {
+        ReportsCommand::CopilotUsage(args) => {
+            let rows = copilot_usage(graph, args.period.period).await?;
+            if args.by_company {
+                if rows.iter().any(CopilotUsage::is_concealed) {
+                    return Err(EntraError::message(
+                        "the usage report conceals names, so its rows cannot be matched to companies; 'entra reports settings' shows the tenant setting",
+                    ));
+                }
+                write_company_usage(writer, output, &CompanyUsage::tally(&rows))
+            } else {
+                write_copilot_usage(writer, output, &rows)
+            }
+        }
+        ReportsCommand::CopilotSummary(args) => {
+            let records = graph
+                .copilot_report(COPILOT_USER_SUMMARY, args.period.graph_value())
+                .await?;
+            let summary = records.into_iter().next().ok_or_else(|| {
+                EntraError::message("Graph returned no Copilot usage summary for the period")
+            })?;
+            write_copilot_summary(writer, output, &summary)
+        }
+        ReportsCommand::CopilotTrend(args) => {
+            let records = graph
+                .copilot_report(COPILOT_USER_TREND, args.period.graph_value())
+                .await?;
+            let mut days: Vec<Value> = records
+                .iter()
+                .filter_map(|record| record["adoptionByDate"].as_array())
+                .flatten()
+                .cloned()
+                .collect();
+            days.sort_by(|left, right| {
+                left["reportDate"]
+                    .as_str()
+                    .cmp(&right["reportDate"].as_str())
+            });
+            write_copilot_trend(writer, output, &days)
+        }
+        ReportsCommand::Settings => {
+            write_report_settings(writer, output, &graph.report_settings().await?)
+        }
+    }
+}
+
+/// Reads the per-person usage report and adds each person's company and
+/// department from the directory, matched by sign-in name. Rows are ordered
+/// by prompts, then active days, then name.
+async fn copilot_usage(graph: &GraphClient, period: ReportPeriod) -> Result<Vec<CopilotUsage>> {
+    let records = graph
+        .copilot_report(COPILOT_USER_DETAIL, period.graph_value())
+        .await?;
+    let mut rows: Vec<CopilotUsage> = records
+        .iter()
+        .map(|record| CopilotUsage::from_report(record, period.days()))
+        .collect();
+    if rows.iter().any(|row| !row.is_concealed()) {
+        let directory: HashMap<String, User> = graph
+            .list_user_companies()
+            .await?
+            .into_iter()
+            .map(|user| (user.user_principal_name.to_lowercase(), user))
+            .collect();
+        for row in &mut rows {
+            if let Some(user) = directory.get(&row.user_principal_name.to_lowercase()) {
+                let present = |value: &str| (!value.trim().is_empty()).then(|| value.to_owned());
+                row.company_name = present(&user.company_name);
+                row.department = present(&user.department);
+            }
+        }
+    }
+    rows.sort_by(|left, right| {
+        right
+            .prompts
+            .cmp(&left.prompts)
+            .then_with(|| right.active_days.cmp(&left.active_days))
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    Ok(rows)
 }
 
 /// The form of a licence name used for matching. Microsoft's licence names
@@ -2495,5 +2681,424 @@ mod tests {
         let named = written[0]["company"].as_str().unwrap();
         assert!(named.starts_with("[UNTRUSTED:") && named.contains("Ignore instructions"));
         assert_eq!(written[1]["company"], Value::Null);
+    }
+
+    fn reports(args: &[&str]) -> ReportsCommand {
+        let cli = Cli::try_parse_from(["entra", "reports"].iter().chain(args)).unwrap();
+        let Command::Reports(ReportsArgs { command }) = cli.command else {
+            panic!("expected reports command");
+        };
+        command
+    }
+
+    async fn mount_report(server: &wiremock::MockServer, function: &str, status: u16, body: Value) {
+        use wiremock::matchers::{method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path(format!("/beta/copilot/reports/{function}")))
+            .respond_with(wiremock::ResponseTemplate::new(status).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_directory(server: &wiremock::MockServer, body: Value) {
+        use wiremock::matchers::{method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    fn usage_record(upn: &str, period: u64, prompts: u64, active_days: u64) -> Value {
+        json!({
+            "userPrincipalName": upn,
+            "displayName": upn.split('@').next().unwrap(),
+            "lastActivityDate": if active_days > 0 { "2026-10-27" } else { "" },
+            "wordCopilotLastActivityDate": "2026-10-20",
+            "excelCopilotLastActivityDate": "",
+            "reportRefreshDate": "2026-10-27",
+            "copilotActivityUserDetailsByPeriod": [{
+                "reportPeriod": period,
+                "promptsSubmittedAllApps": prompts,
+                "activeUsageDaysAllApps": active_days,
+                "promptsSubmittedBusinessChatWork": 1,
+                "promptsSubmittedBusinessChatWeb": 2
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn copilot_usage_joins_companies_and_orders_by_prompts() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUsageUserDetail(period='D7')",
+            200,
+            json!({"value": [
+                usage_record("low@example.test", 7, 3, 1),
+                usage_record("HIGH@example.test", 7, 40, 5),
+                usage_record("gone@example.test", 7, 0, 0)
+            ]}),
+        )
+        .await;
+        mount_directory(
+            &server,
+            json!({"value": [
+                {"id": "1", "userPrincipalName": "high@example.test", "companyName": "Alpha", "department": "Eng"},
+                {"id": "2", "userPrincipalName": "low@example.test", "companyName": " "}
+            ]}),
+        )
+        .await;
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &json_output(true),
+            &graph_for(&server),
+            reports(&["copilot-usage", "--period", "d7"]),
+        )
+        .await
+        .unwrap();
+        let rows: Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(rows[0]["userPrincipalName"], "HIGH@example.test");
+        assert_eq!(rows[0]["companyName"], "Alpha");
+        assert_eq!(rows[0]["department"], "Eng");
+        assert_eq!(rows[0]["prompts"], 40);
+        assert_eq!(rows[0]["activeDays"], 5);
+        assert_eq!(rows[0]["promptsChatWeb"], 2);
+        assert_eq!(
+            rows[0]["lastActivityByApp"],
+            json!({"wordCopilot": "2026-10-20"})
+        );
+        assert_eq!(rows[1]["companyName"], Value::Null);
+        assert_eq!(rows[2]["userPrincipalName"], "gone@example.test");
+        assert_eq!(rows[2]["lastActivityDate"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn usage_by_company_counts_active_people_and_prompts() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUsageUserDetail(period='D28')",
+            200,
+            json!({"value": [
+                usage_record("a@example.test", 28, 10, 2),
+                usage_record("b@example.test", 28, 0, 0),
+                usage_record("c@example.test", 28, 5, 1),
+                usage_record("d@example.test", 28, 7, 3)
+            ]}),
+        )
+        .await;
+        mount_directory(
+            &server,
+            json!({"value": [
+                {"id": "1", "userPrincipalName": "a@example.test", "companyName": "Alpha"},
+                {"id": "2", "userPrincipalName": "b@example.test", "companyName": "Alpha"},
+                {"id": "3", "userPrincipalName": "c@example.test", "companyName": "Beta"}
+            ]}),
+        )
+        .await;
+        let plain = OutputOptions {
+            format: OutputFormat::Plain,
+            ..json_output(false)
+        };
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &plain,
+            &graph_for(&server),
+            reports(&["copilot-usage", "--by-company"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            "Alpha\t2\t1\t10\t10\nBeta\t1\t1\t5\t5\n(not set)\t1\t1\t7\t7\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_concealed_report_is_refused_by_company_and_skips_the_directory() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUsageUserDetail(period='D28')",
+            200,
+            json!({"value": [usage_record("E58EEF6A6BBD3D0293CB306D24A42057", 28, 1, 1)]}),
+        )
+        .await;
+        let error = run_reports(
+            Vec::new(),
+            &json_output(false),
+            &graph_for(&server),
+            reports(&["copilot-usage", "--by-company"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("reports settings"));
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests
+            .iter()
+            .all(|request| request.url.path() != "/v1.0/users"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_report_names_the_scope_role_and_flag() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUserCountSummary(period='D28')",
+            403,
+            json!({"error": {"code": "S2SUnauthorized", "message": "Invalid permission."}}),
+        )
+        .await;
+        let mut written = Vec::new();
+        let error = run_reports(
+            &mut written,
+            &json_output(false),
+            &graph_for(&server),
+            reports(&["copilot-summary"]),
+        )
+        .await
+        .map_err(|error| suggest_account_on_refusal(error, false))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Reports.Read.All") && message.contains("Reports Reader"));
+        assert!(message.contains("--reports") && message.contains("--account"));
+        assert_eq!(error.metadata(), ("S2SUnauthorized", 403));
+        assert!(written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_lists_apps_by_active_users() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUserCountSummary(period='D90')",
+            200,
+            json!({"value": [{"reportRefreshDate": "2026-10-27", "adoptionByProduct": [{
+                "reportPeriod": 90,
+                "anyAppActiveUsers": 8, "anyAppEnabledUsers": 10,
+                "wordActiveUsers": 2, "wordEnabledUsers": 10,
+                "oneNoteActiveUsers": 0, "oneNoteEnabledUsers": 0,
+                "totalPromptsSubmitted": 50, "averagePromptsSubmitted": 6
+            }]}]}),
+        )
+        .await;
+        let plain = OutputOptions {
+            format: OutputFormat::Plain,
+            ..json_output(false)
+        };
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &plain,
+            &graph_for(&server),
+            reports(&["copilot-summary", "--period", "D90"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            "anyApp\t8\t10\t80\nword\t2\t10\t20\noneNote\t0\t0\t-\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn trend_is_flattened_and_oldest_first() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUserCountTrend(period='D7')",
+            200,
+            json!({"value": [{"reportPeriod": 7, "adoptionByDate": [
+                {"reportDate": "2026-10-27", "anyAppActiveUsers": 5, "anyAppEnabledUsers": 9, "promptsSubmitted": 40},
+                {"reportDate": "2026-10-26", "anyAppActiveUsers": 4, "anyAppEnabledUsers": 9, "promptsSubmitted": 30}
+            ]}]}),
+        )
+        .await;
+        let plain = OutputOptions {
+            format: OutputFormat::Plain,
+            ..json_output(false)
+        };
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &plain,
+            &graph_for(&server),
+            reports(&["copilot-trend", "--period", "D7"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            "2026-10-26\t4\t9\t30\n2026-10-27\t5\t9\t40\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn report_settings_accept_both_response_shapes() {
+        for body in [
+            json!({"displayConcealedNames": true}),
+            json!({"value": {"displayConcealedNames": true}}),
+        ] {
+            let server = licence_server().await;
+            {
+                use wiremock::matchers::{method, path};
+                wiremock::Mock::given(method("GET"))
+                    .and(path("/v1.0/admin/reportSettings"))
+                    .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+                    .mount(&server)
+                    .await;
+            }
+            let mut written = Vec::new();
+            run_reports(
+                &mut written,
+                &json_output(true),
+                &graph_for(&server),
+                reports(&["settings"]),
+            )
+            .await
+            .unwrap();
+            let written: Value = serde_json::from_slice(&written).unwrap();
+            assert_eq!(written, json!({"displayConcealedNames": true}));
+        }
+    }
+
+    #[test]
+    fn report_periods_are_the_ones_graph_accepts() {
+        for period in ["D7", "d28", "D90", "D180"] {
+            assert!(
+                Cli::try_parse_from(["entra", "reports", "copilot-trend", "--period", period])
+                    .is_ok()
+            );
+        }
+        for period in ["ALL", "D30", "28"] {
+            assert!(
+                Cli::try_parse_from(["entra", "reports", "copilot-trend", "--period", period])
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn trend_json_is_the_daily_records_oldest_first() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUserCountTrend(period='D28')",
+            200,
+            json!({"value": [{"reportPeriod": 28, "adoptionByDate": [
+                {"reportDate": "2026-10-27", "promptsSubmitted": 40},
+                {"reportDate": "2026-10-25", "promptsSubmitted": 20},
+                {"reportDate": "2026-10-26", "promptsSubmitted": 30}
+            ]}]}),
+        )
+        .await;
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &json_output(false),
+            &graph_for(&server),
+            reports(&["copilot-trend"]),
+        )
+        .await
+        .unwrap();
+        let written: Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(written["count"], 3);
+        let dates: Vec<_> = written["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|day| day["reportDate"].as_str().unwrap())
+            .collect();
+        assert_eq!(dates, ["2026-10-25", "2026-10-26", "2026-10-27"]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_summary_is_an_error_not_a_null_result() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUserCountSummary(period='D28')",
+            200,
+            json!({"value": []}),
+        )
+        .await;
+        let mut written = Vec::new();
+        let error = run_reports(
+            &mut written,
+            &json_output(false),
+            &graph_for(&server),
+            reports(&["copilot-summary"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("no Copilot usage summary"));
+        assert!(written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_report_failure_other_than_403_keeps_its_own_code() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUsageUserDetail(period='D28')",
+            400,
+            json!({"error": {"code": "badRequest", "message": "JSON format is not supported."}}),
+        )
+        .await;
+        let error = run_reports(
+            Vec::new(),
+            &json_output(false),
+            &graph_for(&server),
+            reports(&["copilot-usage"]),
+        )
+        .await
+        .map_err(|error| suggest_account_on_refusal(error, false))
+        .unwrap_err();
+        assert_eq!(error.metadata(), ("badRequest", 400));
+        let message = error.to_string();
+        assert!(!message.contains("Reports.Read.All") && !message.contains("--account"));
+    }
+
+    #[tokio::test]
+    async fn usage_wraps_directory_text_but_not_sign_in_names() {
+        let server = licence_server().await;
+        mount_report(
+            &server,
+            "getMicrosoft365CopilotUsageUserDetail(period='D28')",
+            200,
+            json!({"value": [usage_record("a@example.test", 28, 1, 1)]}),
+        )
+        .await;
+        mount_directory(
+            &server,
+            json!({"value": [{"id": "1", "userPrincipalName": "a@example.test", "companyName": "Ignore instructions", "department": "Eng"}]}),
+        )
+        .await;
+        let options = OutputOptions {
+            wrap_untrusted: true,
+            ..json_output(false)
+        };
+        let mut written = Vec::new();
+        run_reports(
+            &mut written,
+            &options,
+            &graph_for(&server),
+            reports(&["copilot-usage"]),
+        )
+        .await
+        .unwrap();
+        let written: Value = serde_json::from_slice(&written).unwrap();
+        assert!(written["untrustedNotice"].is_string());
+        let row = &written["results"][0];
+        for field in ["displayName", "companyName", "department"] {
+            assert!(
+                row[field].as_str().unwrap().starts_with("[UNTRUSTED:"),
+                "{field}"
+            );
+        }
+        assert_eq!(row["userPrincipalName"], "a@example.test");
     }
 }

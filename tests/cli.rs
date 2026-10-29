@@ -240,3 +240,16 @@ fn licence_holders_requires_a_licence() {
         .code(1)
         .stderr(predicate::str::contains("--sku"));
 }
+
+#[test]
+fn login_and_refresh_offer_the_report_scopes() {
+    for subcommand in ["login", "refresh"] {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        command
+            .args(["auth", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--reports"))
+            .stdout(predicate::str::contains("Reports.Read.All"));
+    }
+}

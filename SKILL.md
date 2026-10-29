@@ -72,6 +72,9 @@ entra auth login --browser --directory \
 - `--licences` adds `LicenseAssignment.Read.All`, which `licences list` and a
   licence name in `licences holders --sku` need, together with a role such as
   Directory Readers. A SKU id in `--sku` needs only `--directory`.
+- `--reports` adds `Reports.Read.All` and `ReportSettings.Read.All`, which the
+  `reports` commands need, together with a role such as Reports Reader, AI
+  Administrator or Global Reader.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.
@@ -103,12 +106,22 @@ entra user list --all --manager --json
 entra licences list                   Tenant licences: name, SKU id, assigned, enabled
 entra licences holders --sku <name|sku-id> [--by-company]
                                       Who holds a licence, or holders per company
+entra reports copilot-usage [--period D7|D28|D90|D180] [--by-company]
+                                      Copilot activity per person, or per company
+entra reports copilot-summary         Active and enabled Copilot users per app
+entra reports copilot-trend           Daily active Copilot users and prompts
+entra reports settings                Whether usage reports conceal names
 entra auth login|refresh|logout|list|status
 ```
 
 `licences` commands run as one account and do not fall back to another on a
 refusal; pass `--account` to choose. Holders include disabled accounts and
 guests. A holder count measures assignment, not use.
+
+`reports` commands also run as one account. Copilot usage covers people who
+hold, or recently held, a Microsoft 365 Copilot licence; unlicensed Copilot
+Chat use is not in it. If `reports settings` says names are concealed, rows
+carry opaque codes and cannot be matched to companies.
 
 `user list --all`, `--group`, `--sign-in-activity` and `--manager` write JSON
 only. `--manager` gives each record a `manager` object (`id`, `displayName`,
@@ -188,6 +201,9 @@ dates.
   or `AuditLog.Read.All` permission. From `licences`, it can also mean the
   signed-in account lacks a role such as Directory Readers; the message names
   both.
+- From `reports`, a refusal (HTTP 403, often `S2SUnauthorized`) means the
+  token lacks `Reports.Read.All` or the account lacks a role such as Reports
+  Reader; the message names both.
 - `Authentication_RequestFromUnsupportedUserRole` means the token has the
   audit scope but the signed-in person lacks a reporting role. The focused
   command recommends Reports Reader; a full-record request warns and retries

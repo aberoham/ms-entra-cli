@@ -6,6 +6,9 @@
 - Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`.
 - Add `--licences` to `auth login` and `auth refresh`, requesting `LicenseAssignment.Read.All`; the setup script now includes that permission.
 - Make `auth refresh` with scope flags add those scopes to the ones already stored, instead of replacing them, so `auth refresh --licences` no longer drops `AuditLog.Read.All` or other permissions the session held.
+- Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.
+- Add `entra reports copilot-summary` (active users per Copilot app), `entra reports copilot-trend` (daily active users and prompts) and `entra reports settings` (whether usage reports conceal names).
+- Add `--reports` to `auth login` and `auth refresh`, requesting `Reports.Read.All` and `ReportSettings.Read.All`; the setup script now includes both.
 
 ## v0.3.0 - 2026-10-13
 

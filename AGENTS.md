@@ -85,6 +85,10 @@ All Graph calls go through `GraphClient`. Preserve these transport guarantees:
   numeric `Retry-After`.
 - Pagination accepts next links only from the configured Graph scheme/host,
   detects repeated links, and has a page ceiling.
+- The Copilot usage report routes are read from Graph's beta endpoint, on the
+  same host, because v1.0 serves them only as CSV. Every other route uses
+  v1.0. Usage-report refusals arrive as 403 with codes such as
+  `S2SUnauthorized`, so the reports layer classifies them by status.
 - Graph errors remain typed by HTTP status and Graph code. Human messages may
   add context, but control flow must not depend on Microsoft's prose.
 
@@ -125,8 +129,9 @@ change of backend must update it.
 
 For user commands without `--account`, try the default authenticated account
 first and fall back to other stored identities only on typed authorization or
-role failures. `licences` commands run under one identity, the default or
-the explicit `--account`, and never fall back; a refusal under the default account names `--account`.
+role failures. `licences` and `reports` commands run under one identity, the
+default or the explicit `--account`, and never fall back; a refusal under the
+default account names `--account`.
 Explicit `--account` is strict but resolves primary mail, UPN
 and proxy aliases against each stored identity's `/me` profile. Never switch an
 explicitly selected identity, infer identity from display names, or treat a

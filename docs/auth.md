@@ -56,13 +56,16 @@ act as the signed-in person, so it can never read more than that person could.
 | `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
 | `GroupMember.Read.All` | **Yes** | `entra user groups` | Every group's basic properties and its membership |
 | `LicenseAssignment.Read.All` | **Yes** | `entra licences list`, a licence name in `licences holders --sku` | The tenant's subscribed licences and every user's licence assignments |
+| `Reports.Read.All` | **Yes** | `entra reports copilot-usage`, `copilot-summary` and `copilot-trend` | Every Microsoft 365 usage report, including per-person activity |
+| `ReportSettings.Read.All` | **Yes** | `entra reports settings` | The tenant's report settings, such as whether names are concealed |
 
 `entra auth login --directory` requests the first five. Without `--directory`,
 the tool requests only the first three. `--lifecycle` adds
-`User-LifeCycleInfo.Read.All` (and `User.Read.All`), and `--groups` adds
-`GroupMember.Read.All` (and `User.Read.All`), and `--licences` adds
-`LicenseAssignment.Read.All` (and `User.Read.All`). All three combine with
-`--directory`.
+`User-LifeCycleInfo.Read.All` (and `User.Read.All`), `--groups` adds
+`GroupMember.Read.All` (and `User.Read.All`), `--licences` adds
+`LicenseAssignment.Read.All` (and `User.Read.All`), and `--reports` adds
+`Reports.Read.All` and `ReportSettings.Read.All` (and `User.Read.All`). All
+four combine with `--directory`.
 
 The tool does not request `Directory.Read.All`, `Group.Read.All` or any write
 permission. It cannot change a directory object.
@@ -127,6 +130,23 @@ the flag; the scopes already held are kept:
 
 ```bash
 entra auth refresh --licences
+```
+
+It stays outside `--directory` for the same reason as `--lifecycle`.
+
+### Usage reports need their own permissions and a role
+
+The `reports` commands read Microsoft 365 usage reports. That needs
+`Reports.Read.All`, or `ReportSettings.Read.All` for `reports settings`, and,
+on the signed-in account, a role that may read usage reports, such as Reports
+Reader, AI Administrator or Global Reader. Graph refuses a missing permission
+and a missing role the same way, with HTTP 403 and a code such as
+`S2SUnauthorized`, so the error names both. `reports copilot-usage` also reads
+every user's company, which needs `User.Read.All`. Once an administrator has
+consented, refresh with the flag; the scopes already held are kept:
+
+```bash
+entra auth refresh --reports
 ```
 
 It stays outside `--directory` for the same reason as `--lifecycle`.
@@ -281,11 +301,12 @@ tsv` prints it.
 7. Go to **API permissions > Add a permission > Microsoft Graph > Delegated
    permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All`,
    `User.Read.All`, `AuditLog.Read.All`, `User-LifeCycleInfo.Read.All`,
-   `GroupMember.Read.All` and `LicenseAssignment.Read.All`. Leave out
-   `AuditLog.Read.All` if you do not need sign-in activity,
-   `User-LifeCycleInfo.Read.All` if you do not need leave dates,
-   `GroupMember.Read.All` if you do not need group memberships, and
-   `LicenseAssignment.Read.All` if you do not need to look up licences by name.
+   `GroupMember.Read.All`, `LicenseAssignment.Read.All`, `Reports.Read.All`
+   and `ReportSettings.Read.All`. Leave out `AuditLog.Read.All` if you do not
+   need sign-in activity, `User-LifeCycleInfo.Read.All` if you do not need
+   leave dates, `GroupMember.Read.All` if you do not need group memberships,
+   `LicenseAssignment.Read.All` if you do not need to look up licences by name,
+   and the two report permissions if you do not need usage reports.
 8. Select **Grant admin consent for \<your organisation\>** and confirm. The
    **Status** column must show a green tick for every permission.
    `User.Read.All` and `AuditLog.Read.All` do not work until this is done.
