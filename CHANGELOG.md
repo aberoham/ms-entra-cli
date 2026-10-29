@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 - 2026-10-29
 
 - Add `entra licences list`, showing each licence the tenant subscribes to with its SKU id and assigned and enabled counts.
 - Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`.
