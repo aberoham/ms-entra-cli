@@ -387,7 +387,8 @@ impl Authenticator {
                 if let Err(error) = self.store_token(email, &refreshed) {
                     if verbose {
                         eprintln!(
-                            "[verbose] refreshed token is usable but could not be persisted: {error}"
+                            "[verbose] refreshed token is usable but could not be persisted: {}",
+                            sanitize_multiline(&error.to_string())
                         );
                     }
                 }
@@ -869,8 +870,9 @@ pub fn list_accounts() -> Result<Vec<AccountInfo>> {
         {
             Ok(info) => accounts.push(info),
             Err(error) => eprintln!(
-                "warning: skipping account file {:?}: {error}",
-                entry.file_name()
+                "warning: skipping account file {:?}: {}",
+                entry.file_name(),
+                sanitize_multiline(&error.to_string())
             ),
         }
     }
