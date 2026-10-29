@@ -59,7 +59,7 @@ fn group_permission(error: EntraError) -> EntraError {
     error.permission_with_scope(
         "read group memberships",
         "GroupMember.Read.All",
-        "Have an administrator grant it, then run 'entra auth refresh --directory --groups' (or sign in again with 'entra auth login --directory --groups')",
+        "Have an administrator grant it, then run 'entra auth refresh --groups' (or sign in again with 'entra auth login --directory --groups')",
     )
 }
 

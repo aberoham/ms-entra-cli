@@ -78,9 +78,10 @@ Microsoft's licence catalogue, not text anyone in the directory can edit, so
 name, company and department; `--json` gives the same records as `user list`.
 Disabled accounts and guests who hold the licence are included, because they
 still hold an assignment. `--sku` takes the name shown by `licences list`, in
-any case and ignoring any character outside printable ASCII, or the SKU id. An id is used as given, without reading the tenant's
-licences, so it needs only `User.Read.All`; an id the tenant does not use
-returns no holders rather than an error. A name shared by two different SKU
+any case and ignoring any character outside printable ASCII, or the SKU id.
+An id is used as given, without reading the tenant's licences, so it needs
+only `User.Read.All`; an id the tenant does not use returns no holders rather
+than an error. A name shared by two different SKU
 ids is refused; pass the id instead.
 
 `--by-company` replaces the list with one row per `companyName` and the number

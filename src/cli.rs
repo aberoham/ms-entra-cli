@@ -403,8 +403,10 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
         command: LicencesCommand::Holders(holders),
     }) = command
     {
-        if holders.sku.trim().is_empty() {
-            return Err(EntraError::message("--sku needs a licence name or SKU id"));
+        if sku_name_key(&holders.sku).is_empty() {
+            return Err(EntraError::message(
+                "--sku needs a licence name or SKU id in printable ASCII",
+            ));
         }
         odata_literal(&holders.sku)?;
     }
@@ -941,7 +943,7 @@ fn resolve_sku(skus: &[SubscribedSku], name: &str) -> Result<Uuid> {
     let wanted_key = sku_name_key(wanted);
     let mut ids: Vec<Uuid> = skus
         .iter()
-        .filter(|sku| sku_name_key(&sku.sku_part_number) == wanted_key)
+        .filter(|sku| !wanted_key.is_empty() && sku_name_key(&sku.sku_part_number) == wanted_key)
         .map(|sku| {
             Uuid::parse_str(&sku.sku_id).map_err(|_| {
                 EntraError::message(format!(
@@ -2177,6 +2179,7 @@ mod tests {
             );
         }
         assert!(resolve_sku(&skus, "\u{200b}").is_err());
+        assert!(resolve_sku(&[sku("", SKU_A)], "\u{200b}").is_err());
     }
 
     #[test]
@@ -2220,7 +2223,7 @@ mod tests {
 
     #[test]
     fn licence_arguments_are_validated_before_authentication() {
-        for sku in ["", "   ", "bad\u{7}name"] {
+        for sku in ["", "   ", "\u{200b}", "é", "bad\u{7}name"] {
             let cli = Cli::try_parse_from(["entra", "licences", "holders", "--sku", sku]).unwrap();
             assert!(validate_command(&cli.command, false).is_err(), "{sku:?}");
         }
