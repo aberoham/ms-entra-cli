@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::Result;
-use crate::model::{GroupMembership, User};
+use crate::model::{CompanyCount, GroupMembership, SubscribedSku, User};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -31,38 +31,29 @@ impl OutputOptions {
     }
 
     pub fn users_json_value(&self, users: &[User]) -> Result<Value> {
-        let (users, notice) = if self.wrap_untrusted {
-            let id = untrusted_id();
-            (
-                users
-                    .iter()
-                    .map(|user| user.wrap_untrusted(&id))
-                    .collect::<Vec<_>>(),
-                Some(untrusted_notice(&id)),
-            )
-        } else {
-            (users.to_vec(), None)
-        };
-        let results = serde_json::to_value(&users)?;
-        if self.results_only {
-            return Ok(results);
-        }
-        let mut envelope = serde_json::Map::new();
-        if let Some(notice) = notice {
-            envelope.insert("untrustedNotice".into(), Value::String(notice));
-        }
-        envelope.insert("results".into(), results);
-        envelope.insert("count".into(), Value::from(users.len()));
-        Ok(Value::Object(envelope))
+        self.wrapped_rows_json_value(users, User::wrap_untrusted)
     }
 
     pub fn memberships_json_value(&self, rows: &[GroupMembership]) -> Result<Value> {
+        self.wrapped_rows_json_value(rows, GroupMembership::wrap_untrusted)
+    }
+
+    pub fn company_counts_json_value(&self, rows: &[CompanyCount]) -> Result<Value> {
+        self.wrapped_rows_json_value(rows, CompanyCount::wrap_untrusted)
+    }
+
+    /// Builds the result envelope for rows that carry directory free text.
+    /// With `wrap_untrusted`, one marker id covers the whole response and the
+    /// envelope explains it; `results_only` still returns the wrapped rows.
+    fn wrapped_rows_json_value<T: Clone + Serialize>(
+        &self,
+        rows: &[T],
+        wrap: impl Fn(&T, &str) -> T,
+    ) -> Result<Value> {
         let (rows, notice) = if self.wrap_untrusted {
             let id = untrusted_id();
             (
-                rows.iter()
-                    .map(|row| row.wrap_untrusted(&id))
-                    .collect::<Vec<_>>(),
+                rows.iter().map(|row| wrap(row, &id)).collect::<Vec<_>>(),
                 Some(untrusted_notice(&id)),
             )
         } else {
@@ -150,6 +141,75 @@ pub fn write_group_memberships(
         })
         .collect();
     write_rows(&mut writer, options, &headers, &table)
+}
+
+pub fn write_skus(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    skus: &[SubscribedSku],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.json_value(&skus, skus.len())?);
+    }
+    let headers = ["SKU", "ID", "ASSIGNED", "ENABLED"];
+    let rows: Vec<Vec<String>> = skus
+        .iter()
+        .map(|sku| {
+            vec![
+                sanitize(&sku.sku_part_number),
+                sanitize(&sku.sku_id),
+                sku.consumed_units.to_string(),
+                sku.prepaid_units.enabled.to_string(),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &rows)
+}
+
+pub fn write_licence_holders(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    users: &[User],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.users_json_value(users)?);
+    }
+    let headers = ["NAME", "SIGN-IN NAME", "COMPANY", "DEPARTMENT"];
+    let rows: Vec<Vec<String>> = users
+        .iter()
+        .map(|user| {
+            vec![
+                sanitize(&user.display_name),
+                sanitize(&user.user_principal_name),
+                sanitize(&user.company_name),
+                sanitize(&user.department),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &rows)
+}
+
+pub fn write_company_counts(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    counts: &[CompanyCount],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.company_counts_json_value(counts)?);
+    }
+    let headers = ["COMPANY", "HOLDERS"];
+    let rows: Vec<Vec<String>> = counts
+        .iter()
+        .map(|row| {
+            vec![
+                row.company
+                    .as_deref()
+                    .map_or_else(|| "(not set)".to_owned(), sanitize),
+                row.holders.to_string(),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &rows)
 }
 
 pub fn write_rows(
