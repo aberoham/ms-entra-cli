@@ -126,7 +126,7 @@ change of backend must update it.
 For user commands without `--account`, try the default authenticated account
 first and fall back to other stored identities only on typed authorization or
 role failures. `licences` commands run under one identity, the default or
-the explicit `--account`, and never fall back; their refusal names `--account`.
+the explicit `--account`, and never fall back; a refusal under the default account names `--account`.
 Explicit `--account` is strict but resolves primary mail, UPN
 and proxy aliases against each stored identity's `/me` profile. Never switch an
 explicitly selected identity, infer identity from display names, or treat a

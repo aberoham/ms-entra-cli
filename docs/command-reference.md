@@ -78,7 +78,7 @@ Microsoft's licence catalogue, not text anyone in the directory can edit, so
 name, company and department; `--json` gives the same records as `user list`.
 Disabled accounts and guests who hold the licence are included, because they
 still hold an assignment. `--sku` takes the name shown by `licences list`, in
-any case, or the SKU id. An id is used as given, without reading the tenant's
+any case and ignoring any character outside printable ASCII, or the SKU id. An id is used as given, without reading the tenant's
 licences, so it needs only `User.Read.All`; an id the tenant does not use
 returns no holders rather than an error. A name shared by two different SKU
 ids is refused; pass the id instead.
@@ -91,7 +91,8 @@ rows. A holder count is an assignment count, not a measure of use.
 
 `licences` commands run as one account: the default, or the one named with
 `--account`. Unlike `user` commands, a refusal does not move on to another
-signed-in account; the error says to pass `--account`.
+signed-in account; the error for the default account says to pass
+`--account`.
 
 ## User lookups
 

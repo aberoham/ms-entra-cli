@@ -390,9 +390,10 @@ async fn run(mut cli: Cli) -> Result<()> {
         Command::User(args) => run_user_with_accounts(&cli, &output, store, args.command).await,
         Command::Licences(args) => {
             let graph = graph_client(&cli, store).await?;
+            let explicit_account = cli.account.is_some();
             run_licences(io::stdout(), &output, &graph, args.command)
                 .await
-                .map_err(suggest_account_on_refusal)
+                .map_err(|error| suggest_account_on_refusal(error, explicit_account))
         }
     }
 }
@@ -937,9 +938,10 @@ async fn run_licences(
 /// share a name but not an id are refused rather than guessed between.
 fn resolve_sku(skus: &[SubscribedSku], name: &str) -> Result<Uuid> {
     let wanted = name.trim();
+    let wanted_key = sku_name_key(wanted);
     let mut ids: Vec<Uuid> = skus
         .iter()
-        .filter(|sku| sku.sku_part_number.eq_ignore_ascii_case(wanted))
+        .filter(|sku| sku_name_key(&sku.sku_part_number) == wanted_key)
         .map(|sku| {
             Uuid::parse_str(&sku.sku_id).map_err(|_| {
                 EntraError::message(format!(
@@ -966,10 +968,22 @@ fn resolve_sku(skus: &[SubscribedSku], name: &str) -> Result<Uuid> {
     }
 }
 
+/// The form of a licence name used for matching. Microsoft's licence names
+/// are ASCII identifiers, but Graph has been seen to return one with a
+/// trailing zero-width space, so everything outside printable ASCII is
+/// dropped from both sides and case is ignored.
+fn sku_name_key(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_graphic)
+        .map(|character| character.to_ascii_uppercase())
+        .collect()
+}
+
 /// `licences` runs under one identity and does not move to another account
-/// on refusal, so a refusal names the way to choose a different one.
-fn suggest_account_on_refusal(error: EntraError) -> EntraError {
-    if error.is_authorization_failure() {
+/// on refusal, so a refusal names the way to choose a different one. When
+/// the account was chosen with `--account`, the hint would only repeat it.
+fn suggest_account_on_refusal(error: EntraError, explicit_account: bool) -> EntraError {
+    if error.is_authorization_failure() && !explicit_account {
         error.context("refused for the selected account (pass --account <email> to use another)")
     } else {
         error
@@ -2146,6 +2160,41 @@ mod tests {
     }
 
     #[test]
+    fn invisible_characters_in_either_name_do_not_block_a_match() {
+        let skus = [
+            sku("CPC_E_2C_8GB_128GB\u{200b}", SKU_A),
+            sku("OTHER", SKU_B),
+        ];
+        for typed in [
+            "CPC_E_2C_8GB_128GB",
+            "cpc_e_2c_8gb_128gb\u{200b}",
+            "\u{feff}CPC_E_2C_8GB_128GB",
+        ] {
+            assert_eq!(
+                resolve_sku(&skus, typed).unwrap(),
+                Uuid::parse_str(SKU_A).unwrap(),
+                "{typed:?}"
+            );
+        }
+        assert!(resolve_sku(&skus, "\u{200b}").is_err());
+    }
+
+    #[test]
+    fn the_account_hint_is_left_out_when_an_account_was_named() {
+        let refusal = || EntraError::Graph {
+            status: 403,
+            code: "Authorization_RequestDenied".into(),
+            message: "denied".into(),
+        };
+        assert!(suggest_account_on_refusal(refusal(), false)
+            .to_string()
+            .contains("--account"));
+        assert!(!suggest_account_on_refusal(refusal(), true)
+            .to_string()
+            .contains("--account"));
+    }
+
+    #[test]
     fn a_name_shared_by_two_ids_is_refused_with_both_ids() {
         let skus = [sku("SPE_E5", SKU_A), sku("SPE_E5", SKU_B)];
         let message = resolve_sku(&skus, "SPE_E5").unwrap_err().to_string();
@@ -2284,7 +2333,7 @@ mod tests {
             licences(&["holders", "--sku", "SPE_E5"]),
         )
         .await
-        .map_err(suggest_account_on_refusal)
+        .map_err(|error| suggest_account_on_refusal(error, false))
         .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("LicenseAssignment.Read.All"));
@@ -2314,7 +2363,7 @@ mod tests {
             licences(&["holders", "--sku", SKU_A]),
         )
         .await
-        .map_err(suggest_account_on_refusal)
+        .map_err(|error| suggest_account_on_refusal(error, false))
         .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("User.Read.All"));
@@ -2338,7 +2387,7 @@ mod tests {
             licences(&["list"]),
         )
         .await
-        .map_err(suggest_account_on_refusal)
+        .map_err(|error| suggest_account_on_refusal(error, false))
         .unwrap_err();
         assert_eq!(error.metadata(), ("BadRequest", 400));
         assert!(!error.to_string().contains("--account"));
