@@ -20,6 +20,10 @@ feeds the directory — not in a lookup tool.
 | `entra user chain` | `User.Read.All` |
 | `entra user groups` | `User.Read.All` and `GroupMember.Read.All` |
 | `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
+| `entra licences list` | `LicenseAssignment.Read.All`, and a role such as Directory Readers or Global Reader |
+| `entra licences holders` | `User.Read.All`; a licence name in `--sku` also needs what `licences list` needs |
+| `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader, AI Administrator or Global Reader; `copilot-usage` also needs `User.Read.All` |
+| `entra reports settings` | `ReportSettings.Read.All`, and a role as for `copilot-*` |
 | `entra auth *` | none beyond sign-in |
 
 See [auth.md](auth.md) for which fields fall on each side of that line.
@@ -27,8 +31,8 @@ See [auth.md](auth.md) for which fields fall on each side of that line.
 ## Auth
 
 ```text
-entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--groups] [--tenant-id ID] [--scope SCOPE]...
-entra auth refresh [--directory] [--lifecycle] [--groups] [--scope SCOPE]...
+entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--groups] [--licences] [--reports] [--tenant-id ID] [--scope SCOPE]...
+entra auth refresh [--directory] [--lifecycle] [--groups] [--licences] [--reports] [--scope SCOPE]...
 entra auth logout [EMAIL]
 entra auth list
 entra auth status
@@ -45,14 +49,99 @@ an eligible licence and a supported role on the signed-in account.
 returns every employee leave date as `null`; the signed-in account also needs
 Lifecycle Workflows Administrator, Global Reader or Global Administrator.
 `--groups` requests `GroupMember.Read.All`, which `user groups` needs.
+`--licences` requests `LicenseAssignment.Read.All`, which `licences list` and a
+licence name in `licences holders --sku` need.
+`--reports` requests `Reports.Read.All` and `ReportSettings.Read.All`, which the
+`reports` commands need.
 `auth refresh` silently redeems the selected account's stored refresh token.
-With no scope flags it retains the stored scope set; flags request an explicit
-scope upgrade after the matching consent has been granted.
+It only ever adds scopes: with no flags it keeps the stored scope set, and
+flags add their scopes to that set once the matching consent has been granted.
+To narrow a session, sign in again with `auth login`.
 
 Account files are keyed by the primary email shown by `entra auth list`, but
 `--account` also accepts that identity's sign-in name/UPN or a proxy address.
 Alternate forms are resolved against `/me`; an explicit account pins the
 operation to that identity and never enables privilege fallback.
+
+## Licences
+
+```text
+entra licences list
+entra licences holders --sku <name|sku-id> [--by-company]
+```
+
+`licenses` is accepted in place of `licences`.
+
+`licences list` shows each licence the tenant subscribes to: its name
+(`skuPartNumber`), its SKU id, how many are assigned (`consumedUnits`) and how
+many are enabled (`prepaidUnits.enabled`), sorted by name. Its rows are
+Microsoft's licence catalogue, not text anyone in the directory can edit, so
+`--wrap-untrusted` leaves them as they are.
+
+`licences holders` lists every user who holds the licence, with name, sign-in
+name, company and department; `--json` gives the same records as `user list`.
+Disabled accounts and guests who hold the licence are included, because they
+still hold an assignment. `--sku` takes the name shown by `licences list`, in
+any case and ignoring any character outside printable ASCII, or the SKU id.
+An id is used as given, without reading the tenant's licences, so it needs
+only `User.Read.All`; an id the tenant does not use returns no holders rather
+than an error. A name shared by two different SKU
+ids is refused; pass the id instead.
+
+`--by-company` replaces the list with one row per `companyName` and the number
+of holders, largest first. Holders with no company are counted together, shown
+as `(not set)` in a table and `null` in JSON
+(`{"company": null, "holders": N}`). With `--json`, `count` is the number of
+rows. A holder count is an assignment count, not a measure of use.
+
+`licences` commands run as one account: the default, or the one named with
+`--account`. Unlike `user` commands, a refusal does not move on to another
+signed-in account; the error for the default account says to pass
+`--account`.
+
+## Reports
+
+```text
+entra reports copilot-usage [--period D7|D28|D90|D180] [--by-company]
+entra reports copilot-summary [--period D7|D28|D90|D180]
+entra reports copilot-trend [--period D7|D28|D90|D180]
+entra reports settings
+```
+
+These read Microsoft 365 Copilot usage reports. `--period` is the number of
+days the report covers, ending on the report date, and defaults to `D28`.
+Microsoft refreshes the reports about once a day, a day or two behind.
+
+`copilot-usage` lists one row per person in the report, with name, sign-in
+name, company, last active date, active days and prompts in the period, most
+prompts first. The report covers people who hold, or recently held, a
+Microsoft 365 Copilot licence; unlicensed Copilot Chat use is not in it.
+Company comes from the directory, matched by sign-in name, so the command also
+reads every user's `companyName` and `department`. `--json` adds department,
+prompts in Copilot Chat (work and web) and each app's last active date
+(`lastActivityByApp`, keyed as Graph names the app).
+
+`--by-company` replaces the list with one row per company: people in the
+report, how many were active on at least one day, their prompts, and prompts
+per active person. People with no company are counted together as `(not set)`
+in a table and `null` in JSON. Counts of people are not licence counts: the
+report can include someone whose licence was removed during the period.
+
+`copilot-summary` shows active and enabled users per Copilot app, with the
+total and average prompts in table output. `copilot-trend` shows each day's
+active and enabled users and prompts, oldest first. With `--json`,
+`copilot-summary` passes Graph's record through unchanged, and `copilot-trend`
+gives Graph's daily records, oldest first.
+
+`settings` shows whether the tenant conceals names in usage reports (Microsoft
+365 admin centre: Settings > Org settings > Services > Reports). When it does,
+the report carries opaque codes instead of names and addresses, so rows cannot
+be matched to the directory: `copilot-usage` leaves company empty and
+`--by-company` is refused.
+
+The report routes are read from Graph's beta endpoint, because v1.0 serves
+them only as CSV. Like `licences`, `reports` commands run as one account and
+do not move to another on a refusal.
 
 ## User lookups
 

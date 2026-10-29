@@ -43,6 +43,22 @@ pub enum EntraError {
         source: Box<EntraError>,
     },
 
+    #[error(
+        "not permitted to read the tenant's licences: the token lacks delegated LicenseAssignment.Read.All, or the signed-in account lacks a role that may read licences, such as Directory Readers or Global Reader; Graph refuses both the same way. Have an administrator grant the permission, then run 'entra auth refresh --licences', and check the account's roles. Passing a SKU id to 'licences holders --sku' skips this read (underlying error: {source})"
+    )]
+    LicenceAccess {
+        #[source]
+        source: Box<EntraError>,
+    },
+
+    #[error(
+        "not permitted to read Microsoft 365 usage reports: the token lacks delegated Reports.Read.All (or ReportSettings.Read.All for the report settings), or the signed-in account lacks a role that may read usage reports, such as Reports Reader, AI Administrator or Global Reader. Have an administrator grant the permission, then run 'entra auth refresh --reports', and check the account's roles (underlying error: {source})"
+    )]
+    ReportsAccess {
+        #[source]
+        source: Box<EntraError>,
+    },
+
     #[error("{context}: {source}")]
     Context {
         context: String,
@@ -100,6 +116,18 @@ impl EntraError {
         }
     }
 
+    pub fn licence_access(self) -> Self {
+        Self::LicenceAccess {
+            source: Box::new(self),
+        }
+    }
+
+    pub fn reports_access(self) -> Self {
+        Self::ReportsAccess {
+            source: Box::new(self),
+        }
+    }
+
     pub fn sign_in_activity_role(self) -> Self {
         Self::SignInActivityRole {
             source: Box::new(self),
@@ -116,18 +144,20 @@ impl EntraError {
             }
             Self::Context { source, .. }
             | Self::Permission { source, .. }
-            | Self::SignInActivityRole { source } => source.is_not_found(),
+            | Self::SignInActivityRole { source }
+            | Self::LicenceAccess { source }
+            | Self::ReportsAccess { source } => source.is_not_found(),
             _ => false,
         }
     }
 
     pub fn is_permission(&self) -> bool {
         match self {
-            Self::Permission { .. } => true,
+            Self::Permission { .. } | Self::ReportsAccess { .. } => true,
             Self::Graph { code, .. } => code.eq_ignore_ascii_case("Authorization_RequestDenied"),
-            Self::Context { source, .. } | Self::SignInActivityRole { source } => {
-                source.is_permission()
-            }
+            Self::Context { source, .. }
+            | Self::SignInActivityRole { source }
+            | Self::LicenceAccess { source } => source.is_permission(),
             _ => false,
         }
     }
@@ -139,7 +169,9 @@ impl EntraError {
             }
             Self::Context { source, .. }
             | Self::Permission { source, .. }
-            | Self::SignInActivityRole { source } => source.is_sign_in_activity_role_refusal(),
+            | Self::SignInActivityRole { source }
+            | Self::LicenceAccess { source }
+            | Self::ReportsAccess { source } => source.is_sign_in_activity_role_refusal(),
             _ => false,
         }
     }
@@ -172,7 +204,9 @@ impl EntraError {
             }
             Self::OAuth { status, code, .. } => (code.as_str(), *status),
             Self::Permission { .. } => ("Authorization_RequestDenied", 403),
-            Self::SignInActivityRole { source } => source.metadata(),
+            Self::SignInActivityRole { source }
+            | Self::LicenceAccess { source }
+            | Self::ReportsAccess { source } => source.metadata(),
             Self::Context { source, .. } => source.metadata(),
             _ => ("CommandFailed", 0),
         }

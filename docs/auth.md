@@ -55,11 +55,17 @@ act as the signed-in person, so it can never read more than that person could.
 | `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
 | `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
 | `GroupMember.Read.All` | **Yes** | `entra user groups` | Every group's basic properties and its membership |
+| `LicenseAssignment.Read.All` | **Yes** | `entra licences list`, a licence name in `licences holders --sku` | The tenant's subscribed licences and every user's licence assignments |
+| `Reports.Read.All` | **Yes** | `entra reports copilot-usage`, `copilot-summary` and `copilot-trend` | Every Microsoft 365 usage report, including per-person activity |
+| `ReportSettings.Read.All` | **Yes** | `entra reports settings` | The tenant's report settings, such as whether names are concealed |
 
 `entra auth login --directory` requests the first five. Without `--directory`,
 the tool requests only the first three. `--lifecycle` adds
-`User-LifeCycleInfo.Read.All` (and `User.Read.All`), and `--groups` adds
-`GroupMember.Read.All` (and `User.Read.All`). Both combine with `--directory`.
+`User-LifeCycleInfo.Read.All` (and `User.Read.All`), `--groups` adds
+`GroupMember.Read.All` (and `User.Read.All`), `--licences` adds
+`LicenseAssignment.Read.All` (and `User.Read.All`), and `--reports` adds
+`Reports.Read.All` and `ReportSettings.Read.All` (and `User.Read.All`). All
+four combine with `--directory`.
 
 The tool does not request `Directory.Read.All`, `Group.Read.All` or any write
 permission. It cannot change a directory object.
@@ -102,15 +108,48 @@ that asks for an unconsented permission fails outright, which would break
 alone, Graph answers those requests but strips each group to its id and type,
 so the tool needs `GroupMember.Read.All` to name the groups. It reports a
 nameless group as a permission error rather than printing it. Once an
-administrator has consented, refresh with both flags so the directory
-permissions are kept:
+administrator has consented, refresh with the flag; the scopes already held
+are kept:
 
 ```bash
-entra auth refresh --directory --groups
+entra auth refresh --groups
 ```
 
 Like `--lifecycle`, it stays outside `--directory` because a login that asks
 for an unconsented permission fails outright.
+
+### Licence names need their own permission and a role
+
+`licences list`, and `licences holders` given a licence name, read the
+tenant's subscribed licences. That needs `LicenseAssignment.Read.All` and, on
+the signed-in account, a role such as Directory Readers or Global Reader.
+Graph returns the same refusal for a missing permission and a missing role, so
+the error names both. `licences holders` given a SKU id skips that read and
+needs only `User.Read.All`. Once an administrator has consented, refresh with
+the flag; the scopes already held are kept:
+
+```bash
+entra auth refresh --licences
+```
+
+It stays outside `--directory` for the same reason as `--lifecycle`.
+
+### Usage reports need their own permissions and a role
+
+The `reports` commands read Microsoft 365 usage reports. That needs
+`Reports.Read.All`, or `ReportSettings.Read.All` for `reports settings`, and,
+on the signed-in account, a role that may read usage reports, such as Reports
+Reader, AI Administrator or Global Reader. Graph refuses a missing permission
+and a missing role the same way, with HTTP 403 and a code such as
+`S2SUnauthorized`, so the error names both. `reports copilot-usage` also reads
+every user's company, which needs `User.Read.All`. Once an administrator has
+consented, refresh with the flag; the scopes already held are kept:
+
+```bash
+entra auth refresh --reports
+```
+
+It stays outside `--directory` for the same reason as `--lifecycle`.
 
 `AuditLog.Read.All` grants read access to all of the tenant's sign-in and audit
 logs, not just one field. If you do not need sign-in activity, leave it out:
@@ -205,7 +244,7 @@ The script understands these variables:
 | `TENANT_ID` | The directory the app is created in. Falls back to `ENTRA_TENANT_ID`, then to the tenant saved by the last `entra auth login`. |
 | `CLIENT_ID` | An existing registration to update in place. Falls back to `ENTRA_CLIENT_ID`, then to the saved client ID; when none is known, the script creates or updates a registration by `APP_NAME`. |
 | `APP_NAME` | Display name; defaults to "Entra CLI (read-only directory lookups)". |
-| `SCOPES` | Space-separated scope list; defaults to the six permissions above. |
+| `SCOPES` | Space-separated scope list; defaults to every permission in the table above. |
 | `GROUP_OBJECT_ID` | Assign a group, and require assignment. |
 | `ASSIGN_USERS` | Space-separated sign-in names to assign, and require assignment. |
 | `ALLOW_ALL_TENANT_USERS=1` | Allow any tenant user. Not the default. |
@@ -261,10 +300,13 @@ tsv` prints it.
    this setting.
 7. Go to **API permissions > Add a permission > Microsoft Graph > Delegated
    permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All`,
-   `User.Read.All`, `AuditLog.Read.All`, `User-LifeCycleInfo.Read.All` and
-   `GroupMember.Read.All`. Leave out `AuditLog.Read.All` if you do not need
-   sign-in activity, `User-LifeCycleInfo.Read.All` if you do not need leave
-   dates, and `GroupMember.Read.All` if you do not need group memberships.
+   `User.Read.All`, `AuditLog.Read.All`, `User-LifeCycleInfo.Read.All`,
+   `GroupMember.Read.All`, `LicenseAssignment.Read.All`, `Reports.Read.All`
+   and `ReportSettings.Read.All`. Leave out `AuditLog.Read.All` if you do not
+   need sign-in activity, `User-LifeCycleInfo.Read.All` if you do not need
+   leave dates, `GroupMember.Read.All` if you do not need group memberships,
+   `LicenseAssignment.Read.All` if you do not need to look up licences by name,
+   and the two report permissions if you do not need usage reports.
 8. Select **Grant admin consent for \<your organisation\>** and confirm. The
    **Status** column must show a green tick for every permission.
    `User.Read.All` and `AuditLog.Read.All` do not work until this is done.
@@ -406,9 +448,16 @@ stored refresh token for it without opening a browser:
 entra auth refresh --directory
 ```
 
-With no scope flags, `auth refresh` keeps the scopes already stored with the
-token, so it never narrows a session by accident. Microsoft rejects the whole
-refresh if any requested scope has not been consented.
+**A refresh only ever adds scopes.** With no flags it asks again for the
+scopes stored with the token. With flags it asks for the flagged scopes *and*
+every stored scope, so `entra auth refresh --licences` keeps
+`AuditLog.Read.All` and any other permission the session already had. A
+refresh never narrows a session; to drop a permission, sign in again with
+`entra auth login` and only the flags you want.
+
+Microsoft rejects the whole refresh if any requested scope, stored or new, has
+not been consented. If an administrator has since withdrawn consent for a
+stored scope, a refresh fails until you sign in again without it.
 
 ## Token storage
 
@@ -484,6 +533,8 @@ token the directory still accepts.
 - [User.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#userreadall)
 - [AuditLog.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#auditlogreadall)
 - [GroupMember.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#groupmemberreadall)
+- [LicenseAssignment.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#licenseassignmentreadall)
+- [List subscribed licences, with the roles a delegated caller needs](https://learn.microsoft.com/en-us/graph/api/subscribedsku-list)
 - [List a user's direct memberships](https://learn.microsoft.com/en-us/graph/api/user-list-memberof)
 - [Roles allowed to read sign-in activity](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph#common-errors)
 - [List a user's manager](https://learn.microsoft.com/en-us/graph/api/user-list-manager)

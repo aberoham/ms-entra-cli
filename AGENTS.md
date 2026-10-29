@@ -65,8 +65,16 @@ cargo build --release
   Human errors go to stderr. Do not place diagnostics on JSON stdout.
 - Commands return exit code `0` on success and `1` on failure, including
   argument validation failures.
-- Sanitize directory-controlled strings before terminal output. Preserve
-  `--wrap-untrusted` for typed JSON result types.
+- Sanitize directory-controlled strings before every human terminal output,
+  including detail views, messages and warnings. `sanitize` removes control
+  characters and Unicode default-ignorable code points (zero-width,
+  bidirectional and other invisible characters), and turns line breaks, tabs
+  and Unicode spaces into one space; `sanitize_multiline` keeps line breaks
+  and tabs. Both keep other non-ASCII code points, because real names use
+  them; removing joiners or variation selectors can still change how some
+  text renders. JSON output, including deep `--plain` records, keeps the
+  directory value unchanged. Preserve `--wrap-untrusted` for typed JSON
+  result types.
 - `--no-write` is a capability guard even though every Graph command is read
   only. Any future mutation needs a new, explicitly reviewed safety design.
 - `--no-input` must prevent prompts in automation.
@@ -85,6 +93,10 @@ All Graph calls go through `GraphClient`. Preserve these transport guarantees:
   numeric `Retry-After`.
 - Pagination accepts next links only from the configured Graph scheme/host,
   detects repeated links, and has a page ceiling.
+- The Copilot usage report routes are read from Graph's beta endpoint, on the
+  same host, because v1.0 serves them only as CSV. Every other route uses
+  v1.0. Usage-report refusals arrive as 403 with codes such as
+  `S2SUnauthorized`, so the reports layer classifies them by status.
 - Graph errors remain typed by HTTP status and Graph code. Human messages may
   add context, but control flow must not depend on Microsoft's prose.
 
@@ -125,7 +137,10 @@ change of backend must update it.
 
 For user commands without `--account`, try the default authenticated account
 first and fall back to other stored identities only on typed authorization or
-role failures. Explicit `--account` is strict but resolves primary mail, UPN
+role failures. `licences` and `reports` commands run under one identity, the
+default or the explicit `--account`, and never fall back; a refusal under the
+default account names `--account`.
+Explicit `--account` is strict but resolves primary mail, UPN
 and proxy aliases against each stored identity's `/me` profile. Never switch an
 explicitly selected identity, infer identity from display names, or treat a
 network/data error as permission to use a different account.
