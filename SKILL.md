@@ -66,8 +66,12 @@ entra auth login --browser --directory \
 - `--lifecycle` adds `User-LifeCycleInfo.Read.All`. Without it (and a role
   such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
   not evidence that nobody is leaving.
-- `--groups` adds `GroupMember.Read.All`, which `user groups` needs. Refresh
-  with `--directory --groups` together, or the directory scopes are dropped.
+- `--groups` adds `GroupMember.Read.All`, which `user groups` needs.
+- `auth refresh` only adds scopes: `entra auth refresh --groups` keeps every
+  scope the session already holds. Sign in again to drop one.
+- `--licences` adds `LicenseAssignment.Read.All`, which `licences list` and a
+  licence name in `licences holders --sku` need, together with a role such as
+  Directory Readers. A SKU id in `--sku` needs only `--directory`.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.
@@ -96,8 +100,15 @@ entra user search <query> [-n 25]     Find people by name or address prefix
 entra user list                       Everyone in the directory
 entra user list --all --manager --json
                                       Every record and its manager, for scripts
+entra licences list                   Tenant licences: name, SKU id, assigned, enabled
+entra licences holders --sku <name|sku-id> [--by-company]
+                                      Who holds a licence, or holders per company
 entra auth login|refresh|logout|list|status
 ```
+
+`licences` commands run as one account and do not fall back to another on a
+refusal; pass `--account` to choose. Holders include disabled accounts and
+guests. A holder count measures assignment, not use.
 
 `user list --all`, `--group`, `--sign-in-activity` and `--manager` write JSON
 only. `--manager` gives each record a `manager` object (`id`, `displayName`,
@@ -174,7 +185,9 @@ dates.
 
 - `Authorization_RequestDenied` means the token lacks the scope, not that the
   person is missing. The tool rewrites it to name the relevant `User.Read.All`
-  or `AuditLog.Read.All` permission.
+  or `AuditLog.Read.All` permission. From `licences`, it can also mean the
+  signed-in account lacks a role such as Directory Readers; the message names
+  both.
 - `Authentication_RequestFromUnsupportedUserRole` means the token has the
   audit scope but the signed-in person lacks a reporting role. The focused
   command recommends Reports Reader; a full-record request warns and retries

@@ -28,8 +28,8 @@ set -euo pipefail
 #   CLIENT_ID        application (client) ID of an existing registration to update
 #   APP_NAME         display name             (default: "Entra CLI (read-only directory lookups)")
 #   SCOPES           space-separated scopes   (default includes AuditLog.Read.All,
-#                    User-LifeCycleInfo.Read.All and GroupMember.Read.All; see
-#                    docs/auth.md)
+#                    User-LifeCycleInfo.Read.All, GroupMember.Read.All and
+#                    LicenseAssignment.Read.All; see docs/auth.md)
 #   GROUP_OBJECT_ID  group object ID to assign
 #   ASSIGN_USERS     space-separated user UPNs (or object IDs) to assign
 #   ALLOW_ALL_TENANT_USERS=1 to intentionally allow any tenant user to sign in
@@ -74,7 +74,7 @@ if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = common ]; then
 fi
 CLIENT_ID="${CLIENT_ID:-${ENTRA_CLIENT_ID:-$(saved_registration client_id)}}"
 APP_NAME="${APP_NAME:-Entra CLI (read-only directory lookups)}"
-SCOPES="${SCOPES:-offline_access User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All User-LifeCycleInfo.Read.All GroupMember.Read.All}"
+SCOPES="${SCOPES:-offline_access User.Read User.ReadBasic.All User.Read.All AuditLog.Read.All User-LifeCycleInfo.Read.All GroupMember.Read.All LicenseAssignment.Read.All}"
 GRAPH_SP="00000003-0000-0000-c000-000000000000"
 echo "==> Tenant: $TENANT_ID"
 

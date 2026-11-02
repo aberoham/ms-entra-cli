@@ -22,7 +22,8 @@ Graph message reliably sends people hunting for a typo instead. If you see the
 raw form, it came from something other than this tool.
 
 Fix: make sure an administrator has consented to the permission named in the
-error (`User.Read.All`, `AuditLog.Read.All` or `GroupMember.Read.All`) for the
+error (`User.Read.All`, `AuditLog.Read.All`, `GroupMember.Read.All` or
+`LicenseAssignment.Read.All`) for the
 app registration, then refresh the current session or log in again:
 
 ```bash
@@ -32,9 +33,13 @@ entra auth login --browser --directory \
   --tenant-id <tenant-id>
 ```
 
-For `GroupMember.Read.All`, add `--groups` to either command.
+For `GroupMember.Read.All`, add `--groups` to either command. For
+`LicenseAssignment.Read.All`, add `--licences`; if the token already holds it,
+the signed-in account also needs a role such as Directory Readers or Global
+Reader, or pass a SKU id to `licences holders --sku` instead of a name.
 
-If login succeeds and the error persists, consent was never granted. See
+If login succeeds and the error persists, consent was never granted, except
+for the licence read, where a missing role gives the same refusal. See
 [auth.md](auth.md#check-that-consent-was-granted).
 
 ## Sign-in fails with an `AADSTS` code
