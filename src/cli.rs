@@ -631,8 +631,15 @@ async fn run_auth_status(
     let config = Config::load().map_err(|error| error.context("loading config"))?;
     let account = select_account(cli, store.clone(), &config, None).await?;
     let email = account.email.clone();
-    let auth = authenticator_for_account(store.clone(), &config, &account)?;
-    let graph = graph_client_for_account(cli, store, &config, &account).await?;
+    let token = authenticator_for_account(store, &config, &account)?
+        .current_token(&email, cli.verbose)
+        .await
+        .map_err(|error| error.context(format!("getting credentials for {email}")))?;
+    let graph = GraphClient::new(
+        token.access_token,
+        Duration::from_secs(cli.timeout),
+        cli.verbose,
+    )?;
     let me = graph
         .me()
         .await
@@ -645,10 +652,9 @@ async fn run_auth_status(
         );
         return Ok(());
     }
-    let expires_at = auth.token_expiry(&email)?;
     write_pretty_json(
         io::stdout(),
-        &status_json(output, &me, &email, &expires_at)?,
+        &status_json(output, &me, &email, &token.expires_at)?,
     )
 }
 
@@ -758,13 +764,14 @@ async fn run_login(
         if !login.directory {
             eprintln!("{note}");
         }
-        let result = json!({
-            "account": info.email,
-            "displayName": info.display_name,
-            "tenantId": info.tenant_id,
-            "clientId": info.client_id,
-        });
-        return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
+        let result = LoginResult {
+            account: info.email.clone(),
+            display_name: info.display_name.clone(),
+            tenant_id: info.tenant_id.clone(),
+            client_id: info.client_id.clone(),
+        };
+        let value = output.wrapped_json_value(&result, LoginResult::wrap_untrusted)?;
+        return write_pretty_json(io::stdout(), &value);
     }
     println!(
         "Logged in as {} ({})",
@@ -775,6 +782,26 @@ async fn run_login(
         println!("{note}");
     }
     Ok(())
+}
+
+/// What `auth login --json` reports. The display name comes from the
+/// directory, so `--wrap-untrusted` marks it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginResult {
+    account: String,
+    display_name: String,
+    tenant_id: String,
+    client_id: String,
+}
+
+impl LoginResult {
+    fn wrap_untrusted(&self, id: &str) -> Self {
+        Self {
+            display_name: format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", self.display_name),
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -3681,5 +3708,32 @@ mod tests {
         let text = String::from_utf8(written).unwrap();
         assert!(text.starts_with(concat!("entra ", env!("CARGO_PKG_VERSION"), " (commit ")));
         assert_eq!(text.lines().count(), 1);
+    }
+
+    #[test]
+    fn login_json_wraps_the_display_name_when_asked() {
+        let result = LoginResult {
+            account: "alex@example.test".into(),
+            display_name: "Alex Smith".into(),
+            tenant_id: "00000000-0000-4000-8000-000000000091".into(),
+            client_id: "00000000-0000-4000-8000-000000000092".into(),
+        };
+        let plain = json_output(false)
+            .wrapped_json_value(&result, LoginResult::wrap_untrusted)
+            .unwrap();
+        assert_eq!(plain["results"]["displayName"], "Alex Smith");
+        assert_eq!(plain["results"]["tenantId"], result.tenant_id);
+
+        let wrapping = OutputOptions {
+            wrap_untrusted: true,
+            ..json_output(false)
+        };
+        let wrapped = wrapping
+            .wrapped_json_value(&result, LoginResult::wrap_untrusted)
+            .unwrap();
+        let name = wrapped["results"]["displayName"].as_str().unwrap();
+        assert!(name.starts_with("[UNTRUSTED:") && name.contains("Alex Smith"));
+        assert!(wrapped.get("untrustedNotice").is_some());
+        assert_eq!(wrapped["results"]["account"], "alex@example.test");
     }
 }

@@ -412,10 +412,18 @@ impl Authenticator {
     }
 
     pub async fn access_token(&self, email: &str, verbose: bool) -> Result<String> {
+        Ok(self.current_token(email, verbose).await?.access_token)
+    }
+
+    /// The token a command should use: the stored one, or a fresh one when
+    /// it is near expiry. A refreshed token is returned even if it could not
+    /// be stored, so its `expires_at` describes the token actually in use,
+    /// which may differ from what is stored.
+    pub async fn current_token(&self, email: &str, verbose: bool) -> Result<TokenData> {
         self.validate_ids()?;
         let data = self.load_token(email)?;
         if !data.needs_refresh() {
-            return Ok(data.access_token);
+            return Ok(data);
         }
         let scope = (!data.scope.is_empty()).then_some(data.scope.as_str());
         match self
@@ -432,7 +440,7 @@ impl Authenticator {
                         );
                     }
                 }
-                Ok(refreshed.access_token)
+                Ok(refreshed)
             }
             Err(error) if !data.is_hard_expired() => {
                 if verbose {
@@ -441,7 +449,7 @@ impl Authenticator {
                         sanitize_multiline(&error.to_string())
                     );
                 }
-                Ok(data.access_token)
+                Ok(data)
             }
             Err(error) => Err(error.context(format!("refreshing expired token for {email}"))),
         }
@@ -692,11 +700,6 @@ impl Authenticator {
         };
         save_account(&info)?;
         Ok(info)
-    }
-
-    /// When the stored access token for `email` expires, as RFC 3339.
-    pub fn token_expiry(&self, email: &str) -> Result<String> {
-        Ok(self.load_token(email)?.expires_at)
     }
 
     fn load_token(&self, email: &str) -> Result<TokenData> {
@@ -1605,10 +1608,10 @@ mod tests {
             .unwrap()
             .with_endpoints(base.clone(), base);
 
-        assert_eq!(
-            auth.access_token(account, false).await.unwrap(),
-            "new-access"
-        );
+        let token = auth.current_token(account, false).await.unwrap();
+        assert_eq!(token.access_token, "new-access");
+        // The expiry is the new token's, not the stale stored one.
+        assert!(token.expires_at.as_str() > "2020-01-01T00:00:00Z");
     }
 
     #[tokio::test]

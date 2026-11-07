@@ -59,7 +59,9 @@ flags add their scopes to that set once the matching consent has been granted.
 To narrow a session, sign in again with `auth login`.
 
 Every `auth` command and `version` honour `--json`, returning the usual
-`{"results": ..., "count": 1}` envelope:
+`{"results": ..., "count": ...}` envelope; `count` is the number of stored
+accounts for `auth list` and 1 for the others. With `--wrap-untrusted`, the
+display name in `auth login` and `auth status` is marked as untrusted:
 
 | Command | `results` |
 |---|---|
@@ -67,7 +69,7 @@ Every `auth` command and `version` honour `--json`, returning the usual
 | `auth refresh` | `{"account", "expiresAt", "scope"}` |
 | `auth logout` | `{"account", "signedOut": true}` |
 | `auth list` | One `{"email", "display_name", "tenant_id", "client_id", "login_time"}` per stored account |
-| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the access token's expiry; `--results-only` returns the profile alone. |
+| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the expiry of the access token the check used, which is a fresh one when the stored token was near expiry; `--results-only` returns the profile alone. |
 | `version` | `{"version", "commit", "built"}`; `commit` and `built` are `null` in a local build. |
 
 Account files are keyed by the primary email shown by `entra auth list`, but
