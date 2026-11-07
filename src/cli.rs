@@ -14,7 +14,7 @@ use crate::attributes::{
 use crate::auth::{requested_scopes, AccountInfo, Authenticator, ScopeFlags};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
-use crate::graph::{odata_literal, GraphClient, PROFILE_FIELDS};
+use crate::graph::{is_name_key, odata_literal, GraphClient, PROFILE_FIELDS};
 use crate::model::{CompanyCount, GroupKind, GroupMembership, SubscribedSku, User};
 use crate::output::{
     sanitize, sanitize_multiline, write_company_counts, write_group_memberships,
@@ -795,47 +795,12 @@ async fn run_user(
     allow_sign_in_activity_fallback: bool,
 ) -> Result<()> {
     match command {
-        UserCommand::Get(mut get) => {
-            let sign_in_activity_only = get.sign_in_activity && !get.all && get.groups.is_empty();
-            if get.all || !get.groups.is_empty() || get.sign_in_activity {
-                let mut properties = selected_properties(&get)?;
-                let record = match graph.get_user_attributes(&get.key, &properties).await {
-                    Ok(record) => record,
-                    Err(error)
-                        if get.sign_in_activity
-                            && !sign_in_activity_only
-                            && allow_sign_in_activity_fallback
-                            && is_sign_in_activity_refusal(&error) =>
-                    {
-                        eprintln!(
-                            "warning: sign-in activity unavailable ({}); retrying without it",
-                            sanitize_multiline(&error.to_string())
-                        );
-                        get.sign_in_activity = false;
-                        properties = selected_properties(&get)?;
-                        graph.get_user_attributes(&get.key, &properties).await?
-                    }
-                    Err(error) => return Err(error),
-                };
-                if sign_in_activity_only {
-                    return write_sign_in_activity(
-                        io::stdout(),
-                        output,
-                        &get.key,
-                        &record,
-                        Utc::now(),
-                    );
-                }
-                return write_deep_record(output, &get.key, &record);
-            }
-            let user = graph.get_user(&get.key).await?;
-            if output.format == OutputFormat::Json {
-                return write_pretty_json(io::stdout(), &output.user_json_value(&user)?);
-            }
-            write_user_detail(io::stdout(), &user)
+        UserCommand::Get(get) => {
+            run_user_get(output, graph, get, allow_sign_in_activity_fallback).await
         }
         UserCommand::Manager { key } => {
-            let manager = graph.get_manager(&key).await?;
+            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
+            let manager = graph.get_manager(&lookup).await?;
             match manager {
                 Some(user) => write_users(io::stdout(), output, &[user]),
                 None if output.format == OutputFormat::Json => {
@@ -851,11 +816,13 @@ async fn run_user(
             }
         }
         UserCommand::Reports { key } => {
-            let reports = graph.get_direct_reports(&key).await?;
+            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
+            let reports = graph.get_direct_reports(&lookup).await?;
             write_users(io::stdout(), output, &reports)
         }
         UserCommand::Groups { key, kind } => {
-            let (transitive, direct) = graph.get_group_memberships(&key).await?;
+            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
+            let (transitive, direct) = graph.get_group_memberships(&lookup).await?;
             let mut rows = GroupMembership::from_lists(transitive, &direct);
             if let Some(kind) = kind {
                 rows.retain(|row| row.kind == kind);
@@ -863,7 +830,8 @@ async fn run_user(
             write_group_memberships(io::stdout(), output, &rows)
         }
         UserCommand::Chain { key, depth } => {
-            let chain = graph.get_chain(&key, depth).await?;
+            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
+            let chain = graph.get_chain(&lookup, depth).await?;
             if matches!(output.format, OutputFormat::Json | OutputFormat::Plain) {
                 write_users(io::stdout(), output, &chain)
             } else {
@@ -884,6 +852,77 @@ async fn run_user(
         }
         UserCommand::List(list) => run_user_list(io::stdout(), output, graph, &list).await,
     }
+}
+
+/// Reads one person, by the summary profile or by the requested attribute
+/// groups. A name is resolved to an object id first; the key the caller typed
+/// still labels the output.
+async fn run_user_get(
+    output: &OutputOptions,
+    graph: &GraphClient,
+    mut get: UserGet,
+    allow_sign_in_activity_fallback: bool,
+) -> Result<()> {
+    let resolved = resolve_name(graph, &get.key).await?;
+    let sign_in_activity_only = get.sign_in_activity && !get.all && get.groups.is_empty();
+    if !(get.all || !get.groups.is_empty() || get.sign_in_activity) {
+        let user = match resolved {
+            Some(user) => user,
+            None => graph.get_user(&get.key).await?,
+        };
+        if output.format == OutputFormat::Json {
+            return write_pretty_json(io::stdout(), &output.user_json_value(&user)?);
+        }
+        return write_user_detail(io::stdout(), &user);
+    }
+    let lookup = graph_key(&get.key, resolved);
+    let mut properties = selected_properties(&get)?;
+    let record = match graph.get_user_attributes(&lookup, &properties).await {
+        Ok(record) => record,
+        Err(error)
+            if get.sign_in_activity
+                && !sign_in_activity_only
+                && allow_sign_in_activity_fallback
+                && is_sign_in_activity_refusal(&error) =>
+        {
+            eprintln!(
+                "warning: sign-in activity unavailable ({}); retrying without it",
+                sanitize_multiline(&error.to_string())
+            );
+            get.sign_in_activity = false;
+            properties = selected_properties(&get)?;
+            graph.get_user_attributes(&lookup, &properties).await?
+        }
+        Err(error) => return Err(error),
+    };
+    if sign_in_activity_only {
+        return write_sign_in_activity(io::stdout(), output, &get.key, &record, Utc::now());
+    }
+    write_deep_record(output, &get.key, &record)
+}
+
+/// Resolves a key that can only be a person's name to that person, and says
+/// on standard error whom it matched, so a wrong match is visible even when
+/// standard output is JSON. Addresses and object ids return `None` and keep
+/// their existing lookup.
+async fn resolve_name(graph: &GraphClient, key: &str) -> Result<Option<User>> {
+    if !is_name_key(key) {
+        return Ok(None);
+    }
+    let user = graph.resolve_by_name(key).await?;
+    eprintln!(
+        "notice: {:?} matched {} <{}>",
+        sanitize(key),
+        sanitize(&user.display_name),
+        sanitize(&user.user_principal_name)
+    );
+    Ok(Some(user))
+}
+
+/// The key to send to Graph: the resolved person's object id, or the key the
+/// caller typed when it was not a name.
+fn graph_key(key: &str, resolved: Option<User>) -> String {
+    resolved.map_or_else(|| key.to_owned(), |user| user.id)
 }
 
 /// Lists the directory. Every page is fetched before anything is written, so
@@ -2516,5 +2555,127 @@ mod tests {
         let named = written[0]["company"].as_str().unwrap();
         assert!(named.starts_with("[UNTRUSTED:") && named.contains("Ignore instructions"));
         assert_eq!(written[1]["company"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_name_is_resolved_once_and_the_object_id_is_used_for_the_read() {
+        use wiremock::matchers::{method, path, query_param};
+        let server = licence_server().await;
+        let id = "00000000-0000-4000-8000-000000000051";
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "5"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": id, "displayName": "Alex Smith", "userPrincipalName": "alex@example.test"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{id}/manager")))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "id": "00000000-0000-4000-8000-000000000052", "displayName": "Manager"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users/Smith/manager"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let command = UserCommand::Manager {
+            key: "Smith".into(),
+        };
+        run_user(&json_output(false), &graph_for(&server), command, false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_summary_get_by_name_reuses_the_search_result() {
+        use wiremock::matchers::{method, path, path_regex};
+        let server = licence_server().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "00000000-0000-4000-8000-000000000053", "displayName": "Alex Smith"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path_regex("^/v1.0/users/.+"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let cli = Cli::try_parse_from(["entra", "user", "get", "Smith"]).unwrap();
+        let Command::User(UserArgs { command }) = cli.command else {
+            panic!("expected a user command");
+        };
+        run_user(&json_output(false), &graph_for(&server), command, false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_name_fails_before_any_read() {
+        use wiremock::matchers::{method, path, path_regex};
+        let server = licence_server().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    {"id": "00000000-0000-4000-8000-000000000054", "displayName": "Alex Smith"},
+                    {"id": "00000000-0000-4000-8000-000000000055", "displayName": "Sam Smith"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(method("GET"))
+            .and(path_regex("^/v1.0/users/.+"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let command = UserCommand::Reports {
+            key: "Smith".into(),
+        };
+        let error = run_user(&json_output(false), &graph_for(&server), command, false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.metadata().0, "AmbiguousUser");
+    }
+
+    #[tokio::test]
+    async fn an_address_or_object_id_never_searches_by_name() {
+        use wiremock::matchers::{method, path};
+        let server = licence_server().await;
+        let id = "00000000-0000-4000-8000-000000000056";
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        for key in ["alex@example.test", id] {
+            wiremock::Mock::given(method("GET"))
+                .and(path(format!("/v1.0/users/{key}/directReports")))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200).set_body_json(json!({"value": []})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let command = UserCommand::Reports { key: key.into() };
+            run_user(&json_output(false), &graph_for(&server), command, false)
+                .await
+                .unwrap();
+        }
     }
 }

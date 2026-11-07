@@ -98,11 +98,11 @@ signed-in account; the error for the default account says to pass
 ## User lookups
 
 ```text
-entra user get <upn|email|id>
-entra user manager <upn|email|id>
-entra user reports <upn|email|id>
-entra user chain <upn|email|id> [--depth 10]
-entra user groups <upn|email|id> [--kind KIND]
+entra user get <upn|email|id|name>
+entra user manager <upn|email|id|name>
+entra user reports <upn|email|id|name>
+entra user chain <upn|email|id|name> [--depth 10]
+entra user groups <upn|email|id|name> [--kind KIND]
 entra user search <query> [-n 25]
 ```
 
@@ -112,6 +112,15 @@ A direct lookup that misses is retried as a search over `mail` and
 address-shaped key and resolve it before requesting attributes, because Graph
 requires an immutable object id for some projections such as
 `signInActivity`. Callers never need to resolve or paste that id themselves.
+
+A key with no `@` that is not an object id can only be a name, because every
+sign-in name contains `@`. `entra` runs the same prefix match as
+`user search` over display name, surname, mail and sign-in name, and uses the
+person it finds. It writes `notice: "<key>" matched <name> <sign-in name>` to
+standard error, so a wrong match is visible even under `--json`. If the name
+matches more than one person, the command fails with the code `AmbiguousUser`
+and lists up to five of them; pass a full address or object id instead. It
+never picks one for you.
 
 `user get` prints every alias and marks which is primary — the way to establish
 whether two addresses are one mailbox or two. Mailbox addresses

@@ -88,13 +88,13 @@ identity.
 
 ```
 entra whoami                          Your own record
-entra user get <upn|email|id>         Full record, including every alias
-entra user get <upn|email|id> --sign-in-activity
+entra user get <upn|email|id|name>    Full record, including every alias
+entra user get <upn|email|id|name> --sign-in-activity
                                       Focused sign-in timestamps and ages
-entra user manager <upn|email|id>     That person's manager
-entra user reports <upn|email|id>     Everyone reporting to them
-entra user chain <upn|email|id>       Management line upwards, indented
-entra user groups <upn|email|id> [--kind distribution|mail-security|m365|security|other]
+entra user manager <upn|email|id|name> That person's manager
+entra user reports <upn|email|id|name> Everyone reporting to them
+entra user chain <upn|email|id|name>  Management line upwards, indented
+entra user groups <upn|email|id|name> [--kind distribution|mail-security|m365|security|other]
                                       Groups they belong to, direct or nested
 entra user search <query> [-n 25]     Find people by name or address prefix
 entra user list                       Everyone in the directory
@@ -129,6 +129,13 @@ object ID but not an arbitrary alias, and some projections require the object
 ID. `entra` resolves address-shaped inputs over `mail`, `userPrincipalName` and
 `proxyAddresses` before deep reads. Either address works; callers do not need
 to paste an object ID.
+
+A key with no `@` that is not an object ID is treated as a name: `entra` runs
+the `user search` prefix match and, when exactly one person matches, uses them
+and prints `notice: "<key>" matched <name> <sign-in name>` on stderr. Check
+that notice before relying on the result. More than one match fails with the
+JSON error code `AmbiguousUser` and lists up to five candidates; rerun with a
+full address from that list.
 
 **`user get` is how you settle whether two addresses are one mailbox or two.**
 It prints the alias list and marks the primary. A directory search showing two

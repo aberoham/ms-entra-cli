@@ -102,8 +102,15 @@ User-facing commands therefore retry a direct 404 with a bounded OData search
 over `mail`, `userPrincipalName`, and `proxyAddresses`, then use the resolved
 object id for relationship and deep-attribute reads.
 
+A key with no `@` that is not a UUID can only be a name, because every
+sign-in name contains `@`. `run_user` resolves such a key once, through
+`GraphClient::resolve_by_name`, before the command's first read, and passes
+the object id on. Exactly one match proceeds with a stderr notice naming the
+person; several matches fail with `AmbiguousUser` and never pick one; none is
+`UserNotFound`. Addresses and object ids never trigger the name search.
+
 Preserve that behaviour across summary `user get`, `--all`, `--group`,
-`manager`, `reports`, and `chain`. Do not treat Graph's generic
+`manager`, `reports`, `chain` and `groups`. Do not treat Graph's generic
 `Request_ResourceNotFound` reference-property wording as proof that an optional
 attribute or relationship is absent. Only a typed not-found result triggers
 the address fallback.

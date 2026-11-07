@@ -22,6 +22,16 @@ const LIST_PAGE_SIZE: &str = "999";
 const SIGN_IN_ACTIVITY_PAGE_SIZE: &str = "500";
 const MANAGER_EXPANSION: &str = "manager($select=id,displayName,userPrincipalName,accountEnabled)";
 const SKU_FIELDS: &str = "skuId,skuPartNumber,consumedUnits,prepaidUnits";
+// How many matches a name lookup fetches, so an ambiguous name can be
+// reported with some of the people it matches.
+const NAME_MATCH_LIMIT: usize = 5;
+
+/// Whether `key` can only be a person's name. Graph's `/users/{key}` route
+/// accepts an object id or a sign-in name, and every sign-in name contains
+/// `@`, so any other key would always miss there.
+pub fn is_name_key(key: &str) -> bool {
+    !key.contains('@') && Uuid::parse_str(key).is_err()
+}
 
 pub const PROFILE_FIELDS: &[&str] = &[
     "id",
@@ -339,6 +349,28 @@ impl GraphClient {
             chain.push(manager);
         }
         Ok(chain)
+    }
+
+    /// Finds the one person a name refers to, using the same prefix match as
+    /// `search_users`. More than one match is an error that lists the
+    /// candidates, because every caller acts on exactly one person and must
+    /// not guess which.
+    pub async fn resolve_by_name(&self, key: &str) -> Result<User> {
+        let mut found = self.search_users(key, NAME_MATCH_LIMIT).await?;
+        found.retain(|user| !user.id.is_empty());
+        match found.len() {
+            0 => Err(EntraError::UserNotFound {
+                key: key.to_owned(),
+            }),
+            1 => Ok(found.remove(0)),
+            _ => Err(EntraError::AmbiguousUser {
+                key: key.to_owned(),
+                candidates: found
+                    .iter()
+                    .map(|user| format!("{} <{}>", user.display_name, user.user_principal_name))
+                    .collect(),
+            }),
+        }
     }
 
     pub async fn search_users(&self, query: &str, top: usize) -> Result<Vec<User>> {
@@ -750,6 +782,108 @@ mod tests {
         GraphClient::new("test-token", Duration::from_secs(2), false)
             .unwrap()
             .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+    }
+
+    fn person(id: &str, name: &str) -> Value {
+        json!({
+            "id": id,
+            "displayName": name,
+            "userPrincipalName": format!("{}@example.test", name.to_ascii_lowercase().replace(' ', ".")),
+        })
+    }
+
+    async fn mount_name_search(server: &MockServer, people: Vec<Value>) {
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", NAME_MATCH_LIMIT.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": people })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[test]
+    fn only_keys_without_an_at_sign_or_object_id_shape_are_names() {
+        assert!(is_name_key("Smith"));
+        assert!(is_name_key("Alex Smith"));
+        assert!(!is_name_key("alex@example.test"));
+        assert!(!is_name_key("00000000-0000-4000-8000-000000000041"));
+    }
+
+    #[tokio::test]
+    async fn a_name_with_one_match_resolves_to_that_person() {
+        let server = MockServer::start().await;
+        let id = "00000000-0000-4000-8000-000000000042";
+        mount_name_search(&server, vec![person(id, "Alex Smith")]).await;
+
+        let user = client(&server)
+            .await
+            .resolve_by_name("Smith")
+            .await
+            .unwrap();
+        assert_eq!(user.id, id);
+    }
+
+    #[tokio::test]
+    async fn a_name_with_several_matches_lists_them_and_picks_none() {
+        let server = MockServer::start().await;
+        mount_name_search(
+            &server,
+            vec![
+                person("00000000-0000-4000-8000-000000000043", "Alex Smith"),
+                person("00000000-0000-4000-8000-000000000044", "Sam Smith"),
+            ],
+        )
+        .await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("Smith")
+            .await
+            .unwrap_err();
+        let EntraError::AmbiguousUser { candidates, .. } = &error else {
+            panic!("expected an ambiguous user, got {error:?}");
+        };
+        assert_eq!(
+            candidates,
+            &[
+                "Alex Smith <alex.smith@example.test>",
+                "Sam Smith <sam.smith@example.test>"
+            ]
+        );
+        assert!(!error.is_not_found());
+    }
+
+    #[tokio::test]
+    async fn a_name_with_no_match_is_a_missing_user() {
+        let server = MockServer::start().await;
+        mount_name_search(&server, vec![]).await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("Nobody")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EntraError::UserNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_refused_name_search_stays_a_permission_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("Smith")
+            .await
+            .unwrap_err();
+        assert!(error.is_authorization_failure());
     }
 
     #[test]

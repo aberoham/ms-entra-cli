@@ -160,6 +160,9 @@ as `alex.smith@login.example.test` and receives mail at
 `alex.smith@example.test`. Either works. Where Graph reads reliably only by
 object ID, `entra` resolves an address-shaped key over `mail`,
 `userPrincipalName` and `proxyAddresses`, and uses the object ID internally.
+A bare name such as `entra user get Smith` also works when exactly one person
+matches it; `entra` says on stderr whom it matched, and refuses with a list of
+candidates when several people do.
 
 `entra user get` prints the full alias list and marks the primary. That is how
 to settle whether two addresses are one mailbox or two.
