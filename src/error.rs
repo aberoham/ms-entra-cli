@@ -6,8 +6,22 @@ pub enum EntraError {
     #[error("{0}")]
     Message(String),
 
-    #[error("no directory user matches {key:?} by sign-in name, object id, primary mail or proxy address")]
+    #[error("no directory user matches {key:?} by sign-in name, object id, primary mail, proxy address or name")]
     UserNotFound { key: String },
+
+    #[error(
+        "{key:?} matches more than one directory user: {}. Find the person with 'entra user search' (raise -n for more results), then pass their full address or object id",
+        .candidates.join("; ")
+    )]
+    AmbiguousUser {
+        key: String,
+        candidates: Vec<String>,
+    },
+
+    #[error(
+        "{key:?} is not an exact display name or surname; the only person whose name starts with it is {candidate}. JSON and plain output accept only an exact name, so a near match cannot be mistaken for the person you meant. Pass that person's full address or object id, or their exact display name"
+    )]
+    InexactName { key: String, candidate: String },
 
     #[error("graph returned {status} {code}: {message}")]
     Graph {
@@ -195,6 +209,8 @@ impl EntraError {
     pub fn metadata(&self) -> (&str, u16) {
         match self {
             Self::UserNotFound { .. } => ("ResourceNotFound", 404),
+            Self::AmbiguousUser { .. } => ("AmbiguousUser", 0),
+            Self::InexactName { .. } => ("InexactNameMatch", 0),
             Self::Graph { status, code, .. } => {
                 if code.eq_ignore_ascii_case("Request_ResourceNotFound") {
                     ("ResourceNotFound", *status)
@@ -266,6 +282,36 @@ mod tests {
         );
         assert!(error.is_not_found());
         assert_eq!(error.metadata(), ("ResourceNotFound", 404));
+    }
+
+    #[test]
+    fn ambiguous_user_has_its_own_code_and_is_not_a_miss() {
+        let error = EntraError::AmbiguousUser {
+            key: "Smith".into(),
+            candidates: vec![
+                "A Smith <a@example.test>".into(),
+                "B Smith <b@example.test>".into(),
+            ],
+        };
+        assert!(!error.is_not_found());
+        assert!(!error.is_authorization_failure());
+        assert_eq!(error.metadata(), ("AmbiguousUser", 0));
+        let message = error.to_string();
+        assert!(
+            message.contains("A Smith <a@example.test>; B Smith"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn inexact_name_has_its_own_code_and_is_not_a_miss() {
+        let error = EntraError::InexactName {
+            key: "Sam".into(),
+            candidate: "Samantha Jones <sj@example.test>".into(),
+        };
+        assert!(!error.is_not_found());
+        assert!(!error.is_authorization_failure());
+        assert_eq!(error.metadata(), ("InexactNameMatch", 0));
     }
 
     #[test]
