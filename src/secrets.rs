@@ -35,31 +35,28 @@ pub trait CredentialStore: Send + Sync {
     /// Locks the store against other processes until the returned guard is
     /// dropped. A store whose single operations are already atomic needs no
     /// lock and returns `None`.
-    fn lock(&self, _mode: LockMode) -> Result<Option<CredentialLock>> {
+    fn lock(&self) -> Result<Option<CredentialLock>> {
         Ok(None)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LockMode {
-    /// Reading: any number of readers, but no writer.
-    Shared,
-    /// Writing or deleting: no other reader or writer.
-    Exclusive,
-}
-
-/// An operating-system file lock, released when dropped. Windows Credential
-/// Manager has no transactions, and a chunked credential spans several
-/// entries, so two processes refreshing one account at once could otherwise
-/// interleave their chunks, and a reader could follow a header to chunks that
-/// a writer is deleting.
+/// An exclusive operating-system file lock, released when dropped. Windows
+/// Credential Manager has no transactions, and a chunked credential spans
+/// several entries, so two processes refreshing one account at once could
+/// otherwise interleave their chunks, and a reader could follow a header to
+/// chunks that a writer is deleting. Reads take the lock exclusively too:
+/// they last milliseconds, and a shared lock would let a run of overlapping
+/// readers keep a writer out indefinitely.
 #[derive(Debug)]
 pub struct CredentialLock {
     _file: File,
 }
 
 impl CredentialLock {
-    pub fn acquire(path: &Path, mode: LockMode, wait: Duration) -> Result<Self> {
+    /// Takes the lock, retrying until `wait` has passed. The retry budget
+    /// counts only time spent waiting for other holders, not the time to open
+    /// the file.
+    pub fn acquire(path: &Path, wait: Duration) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 EntraError::from(error).context(format!(
@@ -82,11 +79,7 @@ impl CredentialLock {
             })?;
         let deadline = Instant::now() + wait;
         loop {
-            let attempt = match mode {
-                LockMode::Shared => file.try_lock_shared(),
-                LockMode::Exclusive => file.try_lock(),
-            };
-            match attempt {
+            match file.try_lock() {
                 Ok(()) => return Ok(Self { _file: file }),
                 Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                     std::thread::sleep(LOCK_POLL);
@@ -205,12 +198,22 @@ impl CredentialStore for KeyringStore {
 
     /// Only chunked storage spans several entries; a single keychain or
     /// keyutils item is replaced in one operation and needs no lock.
-    fn lock(&self, mode: LockMode) -> Result<Option<CredentialLock>> {
-        if CHUNK_BYTES.is_none() {
-            return Ok(None);
-        }
-        CredentialLock::acquire(&credential_lock_path()?, mode, LOCK_WAIT).map(Some)
+    fn lock(&self) -> Result<Option<CredentialLock>> {
+        lock_when_chunked(CHUNK_BYTES, credential_lock_path, LOCK_WAIT)
     }
+}
+
+/// Locks only when credentials are chunked: a single macOS keychain item or
+/// Linux keyutils key is replaced in one operation and needs no lock.
+fn lock_when_chunked(
+    chunk_bytes: Option<usize>,
+    path: impl FnOnce() -> Result<std::path::PathBuf>,
+    wait: Duration,
+) -> Result<Option<CredentialLock>> {
+    if chunk_bytes.is_none() {
+        return Ok(None);
+    }
+    CredentialLock::acquire(&path()?, wait).map(Some)
 }
 
 /// The lock file for this user's credentials. It is deliberately not under
@@ -220,7 +223,11 @@ impl CredentialStore for KeyringStore {
 fn credential_lock_path() -> Result<std::path::PathBuf> {
     dirs::data_local_dir()
         .map(|root| root.join("entra").join(LOCK_FILE))
-        .ok_or_else(|| EntraError::message("could not determine the user's local data directory"))
+        .ok_or_else(|| {
+            EntraError::message(
+                "could not find this account's local application data folder for the credential lock file; check that the account running entra has a loaded user profile and that its AppData\\Local folder exists and is writable",
+            )
+        })
 }
 
 /// Chunks live in one of two slots so that a rewrite never touches the chunks
@@ -241,12 +248,12 @@ fn is_zero(slot: &u8) -> bool {
 const SLOTS: [u8; 2] = [0, 1];
 
 pub fn store_value(store: &dyn CredentialStore, key: &str, value: &str) -> Result<()> {
-    let _lock = store.lock(LockMode::Exclusive)?;
+    let _lock = store.lock()?;
     store_value_with_chunk_size(store, key, value, CHUNK_BYTES)
 }
 
 pub fn get_value(store: &dyn CredentialStore, key: &str) -> Result<String> {
-    let _lock = store.lock(LockMode::Shared)?;
+    let _lock = store.lock()?;
     let primary = store
         .get_password(key)?
         .ok_or_else(|| EntraError::message(format!("no stored credential exists for {key:?}")))?;
@@ -258,7 +265,7 @@ pub fn get_value(store: &dyn CredentialStore, key: &str) -> Result<String> {
 }
 
 pub fn delete_value(store: &dyn CredentialStore, key: &str) -> Result<()> {
-    let _lock = store.lock(LockMode::Exclusive)?;
+    let _lock = store.lock()?;
     if CHUNK_BYTES.is_some() {
         delete_all_chunks(store, key)?;
     }
@@ -388,7 +395,7 @@ pub mod test_support {
     #[derive(Debug, Default)]
     pub struct MemoryStore {
         values: Mutex<BTreeMap<String, Vec<u8>>>,
-        locks: Mutex<Vec<LockMode>>,
+        locks: std::sync::atomic::AtomicUsize,
     }
 
     impl MemoryStore {
@@ -400,9 +407,9 @@ pub mod test_support {
             self.values.lock().unwrap().keys().cloned().collect()
         }
 
-        /// The lock modes requested so far, in order.
-        pub fn locks(&self) -> Vec<LockMode> {
-            self.locks.lock().unwrap().clone()
+        /// How many times the store has been locked.
+        pub fn locks(&self) -> usize {
+            self.locks.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -434,8 +441,8 @@ pub mod test_support {
             Ok(self.values.lock().unwrap().remove(key).is_some())
         }
 
-        fn lock(&self, mode: LockMode) -> Result<Option<CredentialLock>> {
-            self.locks.lock().unwrap().push(mode);
+        fn lock(&self) -> Result<Option<CredentialLock>> {
+            self.locks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(None)
         }
     }
@@ -462,15 +469,24 @@ mod tests {
     }
 
     #[test]
-    fn writes_and_deletes_lock_exclusively_and_reads_share() {
+    fn reads_writes_and_deletes_each_lock_the_store() {
         let store = MemoryStore::default();
         store_value(&store, "account", "value").unwrap();
+        assert_eq!(store.locks(), 1);
         get_value(&store, "account").unwrap();
+        assert_eq!(store.locks(), 2);
         delete_value(&store, "account").unwrap();
-        assert_eq!(
-            store.locks(),
-            [LockMode::Exclusive, LockMode::Shared, LockMode::Exclusive]
-        );
+        assert_eq!(store.locks(), 3);
+    }
+
+    fn is_busy(path: &Path) -> bool {
+        match CredentialLock::acquire(path, Duration::ZERO) {
+            Ok(_) => false,
+            Err(error) => {
+                assert!(error.is_credential_lock_busy(), "{error}");
+                true
+            }
+        }
     }
 
     /// A store that locks a real file and checks, inside every storage
@@ -483,7 +499,7 @@ mod tests {
     impl LockCheckingStore {
         fn assert_locked(&self) {
             assert!(
-                CredentialLock::acquire(&self.path, LockMode::Exclusive, Duration::ZERO).is_err(),
+                is_busy(&self.path),
                 "a storage operation ran without the credential lock"
             );
         }
@@ -515,8 +531,8 @@ mod tests {
             self.inner.delete(key)
         }
 
-        fn lock(&self, mode: LockMode) -> Result<Option<CredentialLock>> {
-            CredentialLock::acquire(&self.path, mode, Duration::from_secs(1)).map(Some)
+        fn lock(&self) -> Result<Option<CredentialLock>> {
+            CredentialLock::acquire(&self.path, Duration::from_secs(1)).map(Some)
         }
     }
 
@@ -530,7 +546,7 @@ mod tests {
         let value = "x".repeat(10);
         // A chunk size of four splits the value across slots, as on Windows.
         {
-            let _lock = store.lock(LockMode::Exclusive).unwrap();
+            let _lock = store.lock().unwrap();
             store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
             store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
         }
@@ -539,57 +555,48 @@ mod tests {
         delete_value(&store, "account").unwrap();
         assert!(store.inner.get_password("account").unwrap().is_none());
         // Outside every operation the lock is free again.
-        CredentialLock::acquire(&store.path, LockMode::Exclusive, Duration::ZERO).unwrap();
+        assert!(!is_busy(&store.path));
     }
 
     #[test]
-    fn a_busy_lock_has_its_own_error_code() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(LOCK_FILE);
-        let _writer = CredentialLock::acquire(&path, LockMode::Exclusive, Duration::ZERO).unwrap();
-        let error = CredentialLock::acquire(&path, LockMode::Shared, Duration::ZERO).unwrap_err();
-        assert_eq!(error.metadata(), ("CredentialLockBusy", 0));
-    }
-
-    #[test]
-    fn an_exclusive_lock_excludes_every_other_holder_until_dropped() {
+    fn chunked_storage_locks_and_single_items_do_not() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested").join(LOCK_FILE);
-        let short = Duration::from_millis(100);
+        let unlocked = lock_when_chunked(None, || panic!("no lock path is needed"), LOCK_POLL);
+        assert!(unlocked.unwrap().is_none());
 
-        let writer = CredentialLock::acquire(&path, LockMode::Exclusive, short).unwrap();
-        for mode in [LockMode::Exclusive, LockMode::Shared] {
-            let error = CredentialLock::acquire(&path, mode, short).unwrap_err();
-            assert!(error.to_string().contains("credential lock"), "{error}");
-        }
-        drop(writer);
-        CredentialLock::acquire(&path, LockMode::Exclusive, short).unwrap();
+        let lock = lock_when_chunked(Some(2560), || Ok(path.clone()), LOCK_POLL).unwrap();
+        assert!(lock.is_some());
+        assert!(is_busy(&path));
+        drop(lock);
+        assert!(!is_busy(&path));
     }
 
     #[test]
-    fn shared_locks_coexist_but_keep_a_writer_out() {
+    fn a_held_lock_excludes_every_other_holder_until_dropped() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(LOCK_FILE);
-        let short = Duration::from_millis(100);
-
-        let first = CredentialLock::acquire(&path, LockMode::Shared, short).unwrap();
-        let second = CredentialLock::acquire(&path, LockMode::Shared, short).unwrap();
-        assert!(CredentialLock::acquire(&path, LockMode::Exclusive, short).is_err());
-        drop((first, second));
-        CredentialLock::acquire(&path, LockMode::Exclusive, short).unwrap();
+        let holder = CredentialLock::acquire(&path, Duration::ZERO).unwrap();
+        let error = CredentialLock::acquire(&path, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(error.metadata(), ("CredentialLockBusy", 0));
+        drop(holder);
+        CredentialLock::acquire(&path, Duration::ZERO).unwrap();
     }
 
     #[test]
-    fn a_writer_waits_for_a_reader_that_finishes_in_time() {
+    fn a_waiting_process_gets_the_lock_once_the_holder_drops_it() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(LOCK_FILE);
-        let reader = CredentialLock::acquire(&path, LockMode::Shared, LOCK_POLL).unwrap();
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            drop(reader);
+        let holder = CredentialLock::acquire(&path, Duration::ZERO).unwrap();
+        let waiting_path = path.clone();
+        let waiter = std::thread::spawn(move || {
+            CredentialLock::acquire(&waiting_path, Duration::from_secs(30)).map(drop)
         });
-        CredentialLock::acquire(&path, LockMode::Exclusive, Duration::from_secs(5)).unwrap();
-        release.join().unwrap();
+        // The waiter cannot finish while the lock is held.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!waiter.is_finished());
+        drop(holder);
+        waiter.join().unwrap().unwrap();
     }
 
     #[test]

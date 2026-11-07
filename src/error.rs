@@ -195,6 +195,14 @@ impl EntraError {
         }
     }
 
+    pub fn is_credential_lock_busy(&self) -> bool {
+        match self {
+            Self::CredentialLockBusy { .. } => true,
+            Self::Context { source, .. } => source.is_credential_lock_busy(),
+            _ => false,
+        }
+    }
+
     pub fn is_authorization_failure(&self) -> bool {
         self.is_permission() || self.is_sign_in_activity_role_refusal()
     }
@@ -307,6 +315,19 @@ mod tests {
             message.contains("A Smith <a@example.test>; B Smith"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_busy_credential_lock_is_recognised_through_context() {
+        let error = EntraError::CredentialLockBusy {
+            path: "credentials.lock".into(),
+            seconds: 10,
+        }
+        .context("loading the stored token");
+        assert!(error.is_credential_lock_busy());
+        assert!(!error.is_authorization_failure());
+        assert_eq!(error.metadata(), ("CredentialLockBusy", 0));
+        assert!(!EntraError::message("credential lock").is_credential_lock_busy());
     }
 
     #[test]
