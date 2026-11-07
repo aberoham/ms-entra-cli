@@ -65,8 +65,16 @@ cargo build --release
   Human errors go to stderr. Do not place diagnostics on JSON stdout.
 - Commands return exit code `0` on success and `1` on failure, including
   argument validation failures.
-- Sanitize directory-controlled strings before terminal output. Preserve
-  `--wrap-untrusted` for typed JSON result types.
+- Sanitize directory-controlled strings before every human terminal output,
+  including detail views, messages and warnings. `sanitize` removes control
+  characters and Unicode default-ignorable code points (zero-width,
+  bidirectional and other invisible characters), and turns line breaks, tabs
+  and Unicode spaces into one space; `sanitize_multiline` keeps line breaks
+  and tabs. Both keep other non-ASCII code points, because real names use
+  them; removing joiners or variation selectors can still change how some
+  text renders. JSON output, including deep `--plain` records, keeps the
+  directory value unchanged. Preserve `--wrap-untrusted` for typed JSON
+  result types.
 - `--no-write` is a capability guard even though every Graph command is read
   only. Any future mutation needs a new, explicitly reviewed safety design.
 - `--no-input` must prevent prompts in automation.
