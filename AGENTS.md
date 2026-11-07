@@ -164,7 +164,11 @@ On macOS and Linux, update the existing keyring item in place so refresh does
 not discard its access-control list. On Windows, preserve the bounded raw-byte
 chunk format headed by the canonical token key, its two alternating chunk slots
 (a rewrite never touches the slot the live header uses), stale-chunk cleanup,
-and legacy single-entry reads. Background refresh may fall back to a not-yet-
+and legacy single-entry reads, and the cross-process lock: `store_value` and
+`delete_value` hold an exclusive lock on `credentials.lock` in the config
+directory and `get_value` a shared one, for storage operations only, never
+across a network refresh. Only `KeyringStore` on Windows locks; macOS and
+Linux replace a single item atomically. Background refresh may fall back to a not-yet-
 expired access token; explicit `auth refresh` must persist successfully.
 
 macOS keychain items must retain the account-specific `entra — <account>` label
