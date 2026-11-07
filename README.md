@@ -12,6 +12,7 @@ entra user groups jane.doe@example.com --kind distribution
 entra user search "jane"
 entra user list --manager --json          # everyone, with their managers
 entra licences holders --sku SPE_E5 --by-company
+entra reports copilot-usage --by-company   # Copilot use per company
 ```
 
 Read-only. There is no write path: changing a person's manager belongs in the
@@ -135,7 +136,9 @@ which `--groups` requests; it also needs administrator consent. `licences list`
 and a licence name in `licences holders --sku` need
 `LicenseAssignment.Read.All`, which `--licences` requests, and a role such as
 Directory Readers on the signed-in account; a SKU id needs only
-`User.Read.All`.
+`User.Read.All`. The `reports` commands need `Reports.Read.All` (and
+`ReportSettings.Read.All` for `reports settings`), which `--reports` requests,
+and a role such as Reports Reader on the signed-in account.
 
 When `--account` is omitted, user commands try the default signed-in account
 first. If Graph returns a typed permission or role refusal, `entra` tries the

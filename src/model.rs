@@ -358,6 +358,156 @@ impl CompanyCount {
     }
 }
 
+/// The tenant's report settings. When `display_concealed_names` is true,
+/// usage reports carry opaque codes instead of names and addresses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportSettings {
+    #[serde(default)]
+    pub display_concealed_names: bool,
+}
+
+const LAST_ACTIVITY_SUFFIX: &str = "LastActivityDate";
+
+/// One person's row of the Microsoft 365 Copilot usage report, joined to the
+/// directory for company and department. Counts are for the report period;
+/// `last_activity_by_app` keeps every per-app date Graph reports, keyed by
+/// the property name without its `LastActivityDate` suffix, so apps Microsoft
+/// adds later still appear.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotUsage {
+    pub display_name: String,
+    pub user_principal_name: String,
+    pub company_name: Option<String>,
+    pub department: Option<String>,
+    pub last_activity_date: Option<String>,
+    pub active_days: u64,
+    pub prompts: u64,
+    pub prompts_chat_work: u64,
+    pub prompts_chat_web: u64,
+    pub last_activity_by_app: BTreeMap<String, String>,
+    pub report_refresh_date: String,
+}
+
+impl CopilotUsage {
+    /// Reads one report record. The period detail is chosen by its length in
+    /// days; a record without one has zero counts.
+    pub fn from_report(record: &Value, period_days: u64) -> Self {
+        let text = |key: &str| record[key].as_str().unwrap_or_default().to_owned();
+        let detail = record["copilotActivityUserDetailsByPeriod"]
+            .as_array()
+            .and_then(|periods| {
+                periods
+                    .iter()
+                    .find(|period| period["reportPeriod"].as_u64() == Some(period_days))
+            })
+            .cloned()
+            .unwrap_or(Value::Null);
+        let count = |key: &str| detail[key].as_u64().unwrap_or_default();
+        let last_activity_by_app = record
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, value)| {
+                let app = key.strip_suffix(LAST_ACTIVITY_SUFFIX)?;
+                let date = value.as_str()?;
+                (!app.is_empty() && !date.is_empty()).then(|| (app.to_owned(), date.to_owned()))
+            })
+            .collect();
+        let last_activity = text("lastActivityDate");
+        Self {
+            display_name: text("displayName"),
+            user_principal_name: text("userPrincipalName"),
+            company_name: None,
+            department: None,
+            last_activity_date: (!last_activity.is_empty()).then_some(last_activity),
+            active_days: count("activeUsageDaysAllApps"),
+            prompts: count("promptsSubmittedAllApps"),
+            prompts_chat_work: count("promptsSubmittedBusinessChatWork"),
+            prompts_chat_web: count("promptsSubmittedBusinessChatWeb"),
+            last_activity_by_app,
+            report_refresh_date: text("reportRefreshDate"),
+        }
+    }
+
+    /// A concealed report replaces each address with an opaque code, so an
+    /// address without `@` cannot be matched to the directory.
+    pub fn is_concealed(&self) -> bool {
+        !self.user_principal_name.contains('@')
+    }
+
+    pub fn wrap_untrusted(&self, id: &str) -> Self {
+        let wrap = |value: &str| format!("[UNTRUSTED:{id}]{value}[/UNTRUSTED:{id}]");
+        Self {
+            display_name: wrap(&self.display_name),
+            company_name: self.company_name.as_deref().map(wrap),
+            department: self.department.as_deref().map(wrap),
+            ..self.clone()
+        }
+    }
+}
+
+/// One row of `reports copilot-usage --by-company`: how many people in the
+/// report belong to a company, how many were active in the period, and their
+/// prompts and active days.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyUsage {
+    pub company: Option<String>,
+    pub users: usize,
+    pub active_users: usize,
+    pub prompts: u64,
+    pub active_days: u64,
+}
+
+impl CompanyUsage {
+    /// Totals per company, most users first and ties by name, with the
+    /// unnamed group after every named one of the same size. A person is
+    /// active when they used Copilot on at least one day in the period.
+    pub fn tally(rows: &[CopilotUsage]) -> Vec<Self> {
+        let mut totals: BTreeMap<Option<String>, Self> = BTreeMap::new();
+        for row in rows {
+            let company = row
+                .company_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
+            let total = totals.entry(company.clone()).or_insert(Self {
+                company,
+                users: 0,
+                active_users: 0,
+                prompts: 0,
+                active_days: 0,
+            });
+            total.users += 1;
+            total.active_users += usize::from(row.active_days > 0);
+            total.prompts += row.prompts;
+            total.active_days += row.active_days;
+        }
+        let mut rows: Vec<Self> = totals.into_values().collect();
+        rows.sort_by(|left, right| {
+            right
+                .users
+                .cmp(&left.users)
+                .then_with(|| left.company.is_none().cmp(&right.company.is_none()))
+                .then_with(|| left.company.cmp(&right.company))
+        });
+        rows
+    }
+
+    pub fn wrap_untrusted(&self, id: &str) -> Self {
+        Self {
+            company: self
+                .company
+                .as_ref()
+                .map(|name| format!("[UNTRUSTED:{id}]{name}[/UNTRUSTED:{id}]")),
+            ..self.clone()
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Page<T> {
     pub value: Vec<T>,
@@ -502,6 +652,23 @@ mod tests {
             company_name: company.into(),
             ..User::default()
         }
+    }
+
+    #[test]
+    fn copilot_usage_reads_the_requested_period_only() {
+        let record = serde_json::json!({
+            "userPrincipalName": "a@example.test",
+            "lastActivityDate": "",
+            "copilotActivityUserDetailsByPeriod": [
+                {"reportPeriod": 7, "promptsSubmittedAllApps": 3, "activeUsageDaysAllApps": 1},
+                {"reportPeriod": 28, "promptsSubmittedAllApps": 9, "activeUsageDaysAllApps": 4}
+            ]
+        });
+        let row = CopilotUsage::from_report(&record, 28);
+        assert_eq!((row.prompts, row.active_days), (9, 4));
+        assert_eq!(row.last_activity_date, None);
+        let missing = CopilotUsage::from_report(&record, 90);
+        assert_eq!((missing.prompts, missing.active_days), (0, 0));
     }
 
     #[test]

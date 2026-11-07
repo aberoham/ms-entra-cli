@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+- Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.
+- Add `entra reports copilot-summary` (active users per Copilot app), `entra reports copilot-trend` (daily active users and prompts) and `entra reports settings` (whether usage reports conceal names). The three Copilot reports take `--period D7|D28|D90|D180`, defaulting to `D28`.
+- Add `--reports` to `auth login` and `auth refresh`, requesting `Reports.Read.All` and `ReportSettings.Read.All`; the setup script now includes both. Because `auth refresh` now adds scopes, narrow a session's scopes by signing in again with `auth login`.
 - Add `entra licences list`, showing each licence the tenant subscribes to with its SKU id and assigned and enabled counts.
-- Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`.
+- Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`. `licenses` is accepted as an alias.
 - Add `--licences` to `auth login` and `auth refresh`, requesting `LicenseAssignment.Read.All`; the setup script now includes that permission.
 - Make `auth refresh` with scope flags add those scopes to the ones already stored, instead of replacing them, so `auth refresh --licences` no longer drops `AuditLog.Read.All` or other permissions the session held.
 - Accept a name as the key for `user get`, `manager`, `reports`, `chain` and `groups`. A key with no `@` that is not an object id is matched as a prefix of display name or surname, and exactly one person must match. Table output opens with a warning naming that person. `--json` and `--plain` accept only an exact display name or surname (error code `InexactNameMatch` otherwise) and add a `lookup` field to the JSON envelope. Several matches fail with the error code `AmbiguousUser` and a list of candidates.
