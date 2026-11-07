@@ -164,7 +164,17 @@ On macOS and Linux, update the existing keyring item in place so refresh does
 not discard its access-control list. On Windows, preserve the bounded raw-byte
 chunk format headed by the canonical token key, its two alternating chunk slots
 (a rewrite never touches the slot the live header uses), stale-chunk cleanup,
-and legacy single-entry reads. Background refresh may fall back to a not-yet-
+and legacy single-entry reads, and the cross-process lock: `store_value`,
+`get_value` and `delete_value` each hold an exclusive lock on
+`credentials.lock` in the per-user local data directory (not the config
+directory, which `ENTRA_CONFIG_DIR` moves while the credential store stays
+put), for storage operations only, never across a network refresh. Reads are
+exclusive too, so overlapping readers cannot starve a writer. A timeout is the
+typed `CredentialLockBusy` error, and a lock file that cannot be found,
+opened or locked is `CredentialLockFailed`; account alias resolution passes
+both on rather than reporting that no account matches. Logout deletes the
+header before its chunks. Only `KeyringStore` on Windows locks; macOS and
+Linux replace a single item atomically. Background refresh may fall back to a not-yet-
 expired access token; explicit `auth refresh` must persist successfully.
 
 macOS keychain items must retain the account-specific `entra — <account>` label
