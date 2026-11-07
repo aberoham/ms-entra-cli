@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 - 2026-11-07
 
 - Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.
 - Add `entra reports copilot-summary` (active users per Copilot app), `entra reports copilot-trend` (daily active users and prompts) and `entra reports settings` (whether usage reports conceal names). The three Copilot reports take `--period D7|D28|D90|D180`, defaulting to `D28`.
