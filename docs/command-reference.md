@@ -58,6 +58,18 @@ It only ever adds scopes: with no flags it keeps the stored scope set, and
 flags add their scopes to that set once the matching consent has been granted.
 To narrow a session, sign in again with `auth login`.
 
+Every `auth` command and `version` honour `--json`, returning the usual
+`{"results": ..., "count": 1}` envelope:
+
+| Command | `results` |
+|---|---|
+| `auth login` | `{"account", "displayName", "tenantId", "clientId"}`. Sign-in prompts and the `--directory` note go to standard error. |
+| `auth refresh` | `{"account", "expiresAt", "scope"}` |
+| `auth logout` | `{"account", "signedOut": true}` |
+| `auth list` | One `{"email", "display_name", "tenant_id", "client_id", "login_time"}` per stored account |
+| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the access token's expiry; `--results-only` returns the profile alone. |
+| `version` | `{"version", "commit", "built"}`; `commit` and `built` are `null` in a local build. |
+
 Account files are keyed by the primary email shown by `entra auth list`, but
 `--account` also accepts that identity's sign-in name/UPN or a proxy address.
 Alternate forms are resolved against `/me`; an explicit account pins the

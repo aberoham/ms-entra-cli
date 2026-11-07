@@ -129,7 +129,9 @@ only. `--manager` gives each record a `manager` object (`id`, `displayName`,
 management lines can be analysed from one export instead of a lookup per
 person.
 
-`--json`, `--plain` and `--select field,field` control output. Set
+`--json`, `--plain` and `--select field,field` control output. `--json`
+applies to every command, including `auth status`, whose envelope adds
+`"account"` and `"expiresAt"` so you can check sign-in before a run. Set
 `--wrap-untrusted` when output feeds a language model: display names and job
 titles are free text that people control.
 

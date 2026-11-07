@@ -694,6 +694,11 @@ impl Authenticator {
         Ok(info)
     }
 
+    /// When the stored access token for `email` expires, as RFC 3339.
+    pub fn token_expiry(&self, email: &str) -> Result<String> {
+        Ok(self.load_token(email)?.expires_at)
+    }
+
     fn load_token(&self, email: &str) -> Result<TokenData> {
         let raw = get_value(self.store.as_ref(), &token_key(email))?;
         let data: TokenData = serde_json::from_str(&raw)?;

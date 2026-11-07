@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Make `auth login`, `auth logout`, `auth status` and `version` honour `--json`. `auth status` returns the signed-in profile with the account and the access token's expiry; `auth login` moves its `--directory` note to standard error in JSON mode.
+
 ## v0.4.0 - 2026-11-07
 
 - Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.

@@ -454,15 +454,7 @@ async fn run(mut cli: Cli) -> Result<()> {
     };
     let store: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
     match cli.command.clone() {
-        Command::Version => {
-            println!(
-                "entra {} (commit {}, built {})",
-                env!("CARGO_PKG_VERSION"),
-                option_env!("ENTRA_BUILD_COMMIT").unwrap_or("none"),
-                option_env!("ENTRA_BUILD_DATE").unwrap_or("unknown")
-            );
-            Ok(())
-        }
+        Command::Version => write_version(io::stdout(), &output),
         Command::Auth(args) => run_auth(&cli, &output, store, args.command).await,
         Command::Whoami => {
             let graph = graph_client(&cli, store).await?;
@@ -546,7 +538,7 @@ async fn run_auth(
     command: AuthCommand,
 ) -> Result<()> {
     match command {
-        AuthCommand::Login(login) => run_login(cli, store, login).await,
+        AuthCommand::Login(login) => run_login(cli, output, store, login).await,
         AuthCommand::Refresh(refresh) => {
             let config = Config::load().map_err(|error| error.context("loading config"))?;
             let account = select_account(cli, store.clone(), &config, None).await?;
@@ -591,6 +583,10 @@ async fn run_auth(
             let email = account.email;
             let auth = Authenticator::new(store, "", DEFAULT_TENANT_ID)?;
             auth.logout(&email)?;
+            if output.format == OutputFormat::Json {
+                let result = json!({"account": email, "signedOut": true});
+                return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
+            }
             println!("Signed out {}", sanitize(&email));
             Ok(())
         }
@@ -620,26 +616,85 @@ async fn run_auth(
                 .collect();
             write_rows(io::stdout(), output, &["EMAIL", "NAME", "DEFAULT"], &rows)
         }
-        AuthCommand::Status => {
-            let config = Config::load().map_err(|error| error.context("loading config"))?;
-            let account = select_account(cli, store.clone(), &config, None).await?;
-            let email = account.email.clone();
-            let graph = graph_client_for_account(cli, store, &config, &account).await?;
-            let me = graph
-                .me()
-                .await
-                .map_err(|error| error.context(format!("token for {email} is not usable")))?;
-            println!(
-                "Account: {}\nStatus: Authenticated as {}",
-                sanitize(&email),
-                sanitize(&me.display_name)
-            );
-            Ok(())
-        }
+        AuthCommand::Status => run_auth_status(cli, output, store).await,
     }
 }
 
-async fn run_login(cli: &Cli, store: Arc<dyn CredentialStore>, login: AuthLogin) -> Result<()> {
+/// Shows the signed-in account and proves its token works by reading the
+/// account's own profile. JSON output is the `whoami` record, with the
+/// account address and the token's expiry added to the envelope.
+async fn run_auth_status(
+    cli: &Cli,
+    output: &OutputOptions,
+    store: Arc<dyn CredentialStore>,
+) -> Result<()> {
+    let config = Config::load().map_err(|error| error.context("loading config"))?;
+    let account = select_account(cli, store.clone(), &config, None).await?;
+    let email = account.email.clone();
+    let auth = authenticator_for_account(store.clone(), &config, &account)?;
+    let graph = graph_client_for_account(cli, store, &config, &account).await?;
+    let me = graph
+        .me()
+        .await
+        .map_err(|error| error.context(format!("token for {email} is not usable")))?;
+    if output.format != OutputFormat::Json {
+        println!(
+            "Account: {}\nStatus: Authenticated as {}",
+            sanitize(&email),
+            sanitize(&me.display_name)
+        );
+        return Ok(());
+    }
+    let expires_at = auth.token_expiry(&email)?;
+    write_pretty_json(
+        io::stdout(),
+        &status_json(output, &me, &email, &expires_at)?,
+    )
+}
+
+/// The `whoami` envelope with the account address and token expiry added.
+/// `--results-only` has no envelope, so it carries only the profile.
+fn status_json(output: &OutputOptions, me: &User, email: &str, expires_at: &str) -> Result<Value> {
+    let mut value = output.user_json_value(me)?;
+    if output.results_only {
+        return Ok(value);
+    }
+    if let Some(envelope) = value.as_object_mut() {
+        envelope.insert("account".into(), Value::from(email));
+        envelope.insert("expiresAt".into(), Value::from(expires_at));
+    }
+    Ok(value)
+}
+
+/// The version and build provenance, as text or as a JSON envelope.
+fn write_version(writer: impl Write, output: &OutputOptions) -> Result<()> {
+    let commit = option_env!("ENTRA_BUILD_COMMIT");
+    let built = option_env!("ENTRA_BUILD_DATE");
+    if output.format == OutputFormat::Json {
+        let result = json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": commit,
+            "built": built,
+        });
+        return write_pretty_json(writer, &output.json_value(&result, 1)?);
+    }
+    let mut writer = writer;
+    writeln!(
+        writer,
+        "entra {} (commit {}, built {})",
+        env!("CARGO_PKG_VERSION"),
+        commit.unwrap_or("none"),
+        built.unwrap_or("unknown")
+    )?;
+    Ok(())
+}
+
+async fn run_login(
+    cli: &Cli,
+    output: &OutputOptions,
+    store: Arc<dyn CredentialStore>,
+    login: AuthLogin,
+) -> Result<()> {
     if cli.no_input {
         return Err(EntraError::message(
             "login is interactive and --no-input was given",
@@ -698,15 +753,26 @@ async fn run_login(cli: &Cli, store: Arc<dyn CredentialStore>, login: AuthLogin)
     config
         .save()
         .map_err(|error| error.context("saving config"))?;
+    let note = "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent.";
+    if output.format == OutputFormat::Json {
+        if !login.directory {
+            eprintln!("{note}");
+        }
+        let result = json!({
+            "account": info.email,
+            "displayName": info.display_name,
+            "tenantId": info.tenant_id,
+            "clientId": info.client_id,
+        });
+        return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
+    }
     println!(
         "Logged in as {} ({})",
         sanitize(&info.display_name),
         sanitize(&info.email)
     );
     if !login.directory {
-        println!(
-            "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent."
-        );
+        println!("{note}");
     }
     Ok(())
 }
@@ -3580,5 +3646,40 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.metadata().0, "InexactNameMatch", "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn status_json_adds_account_and_expiry_to_the_envelope_only() {
+        let me = User {
+            id: "00000000-0000-4000-8000-000000000081".into(),
+            display_name: "Alex Smith".into(),
+            ..User::default()
+        };
+        let expiry = "2026-11-07T14:00:00Z";
+        let enveloped = status_json(&json_output(false), &me, "alex@example.test", expiry).unwrap();
+        assert_eq!(enveloped["account"], "alex@example.test");
+        assert_eq!(enveloped["expiresAt"], expiry);
+        assert_eq!(enveloped["count"], 1);
+        assert_eq!(enveloped["results"]["displayName"], "Alex Smith");
+
+        let bare = status_json(&json_output(true), &me, "alex@example.test", expiry).unwrap();
+        assert_eq!(bare["displayName"], "Alex Smith");
+        assert!(bare.get("account").is_none() && bare.get("expiresAt").is_none());
+    }
+
+    #[test]
+    fn version_json_is_an_envelope_and_text_stays_one_line() {
+        let mut written = Vec::new();
+        write_version(&mut written, &json_output(false)).unwrap();
+        let value: Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(value["results"]["version"], env!("CARGO_PKG_VERSION"));
+        assert!(value["results"].get("commit").is_some());
+        assert_eq!(value["count"], 1);
+
+        let mut written = Vec::new();
+        write_version(&mut written, &table_output()).unwrap();
+        let text = String::from_utf8(written).unwrap();
+        assert!(text.starts_with(concat!("entra ", env!("CARGO_PKG_VERSION"), " (commit ")));
+        assert_eq!(text.lines().count(), 1);
     }
 }
