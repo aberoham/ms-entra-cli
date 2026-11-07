@@ -58,6 +58,20 @@ It only ever adds scopes: with no flags it keeps the stored scope set, and
 flags add their scopes to that set once the matching consent has been granted.
 To narrow a session, sign in again with `auth login`.
 
+Every `auth` command and `version` honour `--json`, returning the usual
+`{"results": ..., "count": ...}` envelope; `count` is the number of stored
+accounts for `auth list` and 1 for the others. With `--wrap-untrusted`, the
+display name in `auth login` and `auth status` is marked as untrusted:
+
+| Command | `results` |
+|---|---|
+| `auth login` | `{"account", "displayName", "tenantId", "clientId"}`. Sign-in prompts and the `--directory` note go to standard error. |
+| `auth refresh` | `{"account", "expiresAt", "scope"}` |
+| `auth logout` | `{"account", "signedOut": true}` |
+| `auth list` | One `{"email", "display_name", "tenant_id", "client_id", "login_time"}` per stored account |
+| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the expiry of the access token the check actually used, including a refreshed token that could not be stored; `--results-only` returns the profile alone. |
+| `version` | `{"version", "commit", "built"}`; `commit` and `built` are `null` in a local build. |
+
 Account files are keyed by the primary email shown by `entra auth list`, but
 `--account` also accepts that identity's sign-in name/UPN or a proxy address.
 Alternate forms are resolved against `/me`; an explicit account pins the

@@ -253,3 +253,11 @@ fn login_and_refresh_offer_the_report_scopes() {
             .stdout(predicate::str::contains("Reports.Read.All"));
     }
 }
+
+#[test]
+fn version_honours_json() {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    let output = command.args(["--json", "version"]).assert().success();
+    let value: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    assert_eq!(value["results"]["version"], env!("CARGO_PKG_VERSION"));
+}

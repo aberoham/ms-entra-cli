@@ -97,13 +97,23 @@ impl OutputOptions {
     }
 
     pub fn user_json_value(&self, user: &User) -> Result<Value> {
-        let (user, notice) = if self.wrap_untrusted {
+        self.wrapped_json_value(user, User::wrap_untrusted)
+    }
+
+    /// Builds the envelope for one record that carries directory free text,
+    /// wrapping that text with `wrap` when `--wrap-untrusted` is set.
+    pub fn wrapped_json_value<T: Clone + Serialize>(
+        &self,
+        record: &T,
+        wrap: impl Fn(&T, &str) -> T,
+    ) -> Result<Value> {
+        let (record, notice) = if self.wrap_untrusted {
             let id = untrusted_id();
-            (user.wrap_untrusted(&id), Some(untrusted_notice(&id)))
+            (wrap(record, &id), Some(untrusted_notice(&id)))
         } else {
-            (user.clone(), None)
+            (record.clone(), None)
         };
-        let result = serde_json::to_value(user)?;
+        let result = serde_json::to_value(record)?;
         if self.results_only {
             return Ok(result);
         }
