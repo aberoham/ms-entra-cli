@@ -129,8 +129,8 @@ name prefixes, so a short key cannot single out someone by an address such as
   person it would have matched. An exact match adds
   `"lookup": {"key": ..., "matchedBy": "exactName", "id": ...}` to the
   `{results, count}` envelope and writes a `notice:` line to standard error.
-  `--results-only` and deep `user get --all/--group` JSON have no envelope, so
-  there the notice on standard error is the only sign.
+  Plain output, `--results-only` and deep `user get --all/--group` JSON have
+  no envelope, so there the notice on standard error is the only sign.
 
 If the name matches more than one person, the command fails with the code
 `AmbiguousUser` and lists up to five of them. It never picks one for you. For

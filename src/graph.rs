@@ -396,6 +396,7 @@ impl GraphClient {
     /// named. More than one match is an error that lists the candidates,
     /// because every caller acts on exactly one person and must not guess.
     pub async fn resolve_by_name(&self, key: &str) -> Result<NamedUser> {
+        let key = key.trim();
         let escaped = odata_literal(key)?;
         let filter =
             format!("startswith(displayName,'{escaped}') or startswith(surname,'{escaped}')");
@@ -999,6 +1000,30 @@ mod tests {
             "{message:?}"
         );
         assert!(!message.contains(['\n', '\t', '\u{202e}']), "{message:?}");
+    }
+
+    #[tokio::test]
+    async fn surrounding_spaces_are_trimmed_before_the_search() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param(
+                "$filter",
+                "startswith(displayName,'Smith') or startswith(surname,'Smith')",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "00000000-0000-4000-8000-000000000049", "displayName": "Alex Smith", "surname": "Smith"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let named = client(&server)
+            .await
+            .resolve_by_name("  Smith ")
+            .await
+            .unwrap();
+        assert_eq!(named.matched, NameMatch::Exact);
     }
 
     #[tokio::test]

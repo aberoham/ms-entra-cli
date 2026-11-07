@@ -940,6 +940,17 @@ struct Person {
 /// scripts read without looking at warnings, accept only an exact display
 /// name or surname, and record the lookup in the envelope.
 async fn resolve_person(graph: &GraphClient, output: &OutputOptions, key: &str) -> Result<Person> {
+    resolve_person_to(graph, output, key, &mut io::stdout(), &mut io::stderr()).await
+}
+
+/// `resolve_person`, announcing a name match to the given streams.
+async fn resolve_person_to(
+    graph: &GraphClient,
+    output: &OutputOptions,
+    key: &str,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<Person> {
     if !is_name_key(key) {
         return Ok(Person {
             graph_key: key.to_owned(),
@@ -954,7 +965,7 @@ async fn resolve_person(graph: &GraphClient, output: &OutputOptions, key: &str) 
             candidate: person_label(&named.user),
         });
     }
-    announce_name_match(key, &named, output.format);
+    announce_name_match(stdout, stderr, key, &named, output.format)?;
     let mut output = output.clone();
     output.lookup = Some(json!({
         "key": key,
@@ -973,18 +984,27 @@ async fn resolve_person(graph: &GraphClient, output: &OutputOptions, key: &str) 
 
 /// Says whom a name matched: as a warning at the top of table output, where
 /// a person reads it, or on standard error beside JSON and plain output.
-fn announce_name_match(key: &str, named: &NamedUser, format: OutputFormat) {
+fn announce_name_match(
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    key: &str,
+    named: &NamedUser,
+    format: OutputFormat,
+) -> Result<()> {
     let key = sanitize(key);
     let person = person_label(&named.user);
     match (format, named.matched) {
-        (OutputFormat::Table, NameMatch::Prefix) => println!(
+        (OutputFormat::Table, NameMatch::Prefix) => writeln!(
+            stdout,
             "WARNING: {key:?} is not an exact name. Showing the only person whose display name or surname starts with it: {person}.\nWARNING: If you meant someone else, or someone who has left, pass a full address or object id.\n"
-        ),
-        (OutputFormat::Table, NameMatch::Exact) => println!(
+        )?,
+        (OutputFormat::Table, NameMatch::Exact) => writeln!(
+            stdout,
             "WARNING: {key:?} was looked up by name and matched {person}. Pass a full address or object id to be certain.\n"
-        ),
-        _ => eprintln!("notice: {key:?} matched {person} by exact name"),
+        )?,
+        _ => writeln!(stderr, "notice: {key:?} matched {person} by exact name")?,
     }
+    Ok(())
 }
 
 /// Lists the directory. Every page is fetched before anything is written, so
@@ -2842,5 +2862,118 @@ mod tests {
             .unwrap()
             .get("lookup")
             .is_none());
+    }
+
+    async fn announce(output: OutputOptions, key: &str, person: Value) -> (Person, String, String) {
+        use wiremock::matchers::{method, path};
+        let server = licence_server().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(json!({ "value": [person] })),
+            )
+            .mount(&server)
+            .await;
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let person = resolve_person_to(&graph_for(&server), &output, key, &mut stdout, &mut stderr)
+            .await
+            .unwrap();
+        (
+            person,
+            String::from_utf8(stdout).unwrap(),
+            String::from_utf8(stderr).unwrap(),
+        )
+    }
+
+    fn samantha() -> Value {
+        json!({
+            "id": "00000000-0000-4000-8000-000000000071",
+            "displayName": "Samantha Jones",
+            "surname": "Jones",
+            "userPrincipalName": "sj@example.test"
+        })
+    }
+
+    #[tokio::test]
+    async fn table_output_puts_the_name_warning_on_stdout() {
+        let (_, stdout, stderr) = announce(table_output(), "Sam", samantha()).await;
+        assert!(
+            stdout.starts_with("WARNING: \"Sam\" is not an exact name"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Samantha Jones <sj@example.test>"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("someone who has left"), "{stdout}");
+        assert!(stderr.is_empty(), "{stderr}");
+
+        let (_, stdout, _) = announce(table_output(), "Jones", samantha()).await;
+        assert!(
+            stdout.starts_with("WARNING: \"Jones\" was looked up by name"),
+            "{stdout}"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_and_plain_output_keep_the_name_notice_off_stdout() {
+        for output in [json_output(false), json_output(true), plain_output()] {
+            let (person, stdout, stderr) = announce(output, "Samantha Jones", samantha()).await;
+            assert!(stdout.is_empty(), "{stdout}");
+            assert!(
+                stderr.starts_with("notice: \"Samantha Jones\" matched"),
+                "{stderr}"
+            );
+            assert!(person.output.lookup.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn addresses_and_object_ids_are_never_announced() {
+        let server = licence_server().await;
+        for output in [table_output(), json_output(false)] {
+            for key in ["sj@example.test", "00000000-0000-4000-8000-000000000072"] {
+                let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+                let person =
+                    resolve_person_to(&graph_for(&server), &output, key, &mut stdout, &mut stderr)
+                        .await
+                        .unwrap();
+                assert!(stdout.is_empty() && stderr.is_empty(), "{key}");
+                assert!(person.output.lookup.is_none(), "{key}");
+                assert_eq!(person.graph_key, key);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_person_command_refuses_a_prefix_match_before_reading() {
+        use wiremock::matchers::{method, path_regex};
+        let commands: [&[&str]; 7] = [
+            &["get", "Sam"],
+            &["get", "Sam", "--all"],
+            &["get", "Sam", "--group", "identity"],
+            &["manager", "Sam"],
+            &["reports", "Sam"],
+            &["chain", "Sam"],
+            &["groups", "Sam"],
+        ];
+        for arguments in commands {
+            let server = licence_server().await;
+            one_prefix_match(&server, "00000000-0000-4000-8000-000000000073").await;
+            wiremock::Mock::given(method("GET"))
+                .and(path_regex("^/v1.0/users/.+"))
+                .respond_with(wiremock::ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let cli = Cli::try_parse_from(["entra", "user"].iter().chain(arguments)).unwrap();
+            let Command::User(UserArgs { command }) = cli.command else {
+                panic!("expected a user command");
+            };
+            let error = run_user(&json_output(false), &graph_for(&server), command, false)
+                .await
+                .unwrap_err();
+            assert_eq!(error.metadata().0, "InexactNameMatch", "{arguments:?}");
+        }
     }
 }
