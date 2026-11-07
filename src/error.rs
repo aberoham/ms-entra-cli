@@ -78,6 +78,14 @@ pub enum EntraError {
     )]
     CredentialLockBusy { path: String, seconds: u64 },
 
+    #[error("could not {action} the credential lock file {path}: {source}")]
+    CredentialLockFailed {
+        action: &'static str,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("{context}: {source}")]
     Context {
         context: String,
@@ -203,6 +211,17 @@ impl EntraError {
         }
     }
 
+    /// Whether the credential lock could not be taken, because it was busy
+    /// or because its file could not be found, opened or locked. None of
+    /// these says anything about which account a caller meant.
+    pub fn is_credential_lock_error(&self) -> bool {
+        match self {
+            Self::CredentialLockBusy { .. } | Self::CredentialLockFailed { .. } => true,
+            Self::Context { source, .. } => source.is_credential_lock_error(),
+            _ => false,
+        }
+    }
+
     pub fn is_authorization_failure(&self) -> bool {
         self.is_permission() || self.is_sign_in_activity_role_refusal()
     }
@@ -225,6 +244,7 @@ impl EntraError {
             Self::AmbiguousUser { .. } => ("AmbiguousUser", 0),
             Self::InexactName { .. } => ("InexactNameMatch", 0),
             Self::CredentialLockBusy { .. } => ("CredentialLockBusy", 0),
+            Self::CredentialLockFailed { .. } => ("CredentialLockFailed", 0),
             Self::Graph { status, code, .. } => {
                 if code.eq_ignore_ascii_case("Request_ResourceNotFound") {
                     ("ResourceNotFound", *status)
@@ -328,6 +348,15 @@ mod tests {
         assert!(!error.is_authorization_failure());
         assert_eq!(error.metadata(), ("CredentialLockBusy", 0));
         assert!(!EntraError::message("credential lock").is_credential_lock_busy());
+        assert!(error.is_credential_lock_error());
+        let failed = EntraError::CredentialLockFailed {
+            action: "open",
+            path: "credentials.lock".into(),
+            source: std::io::Error::other("denied"),
+        }
+        .context("loading the stored token");
+        assert!(failed.is_credential_lock_error() && !failed.is_credential_lock_busy());
+        assert_eq!(failed.metadata(), ("CredentialLockFailed", 0));
     }
 
     #[test]

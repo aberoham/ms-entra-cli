@@ -1389,7 +1389,7 @@ async fn resolve_account_identifier(
             Ok(graph) => graph,
             // Contention says nothing about which identity was meant, and a
             // caller can retry it, so it must not become "no account matches".
-            Err(error) if error.is_credential_lock_busy() => return Err(error),
+            Err(error) if error.is_credential_lock_error() => return Err(error),
             Err(error) => {
                 if cli.verbose {
                     eprintln!(

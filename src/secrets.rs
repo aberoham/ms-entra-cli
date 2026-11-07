@@ -53,31 +53,34 @@ pub struct CredentialLock {
 }
 
 impl CredentialLock {
-    /// Takes the lock, retrying until `wait` has passed. The retry budget
-    /// counts only time spent waiting for other holders, not the time to open
-    /// the file.
+    /// Takes the lock, retrying for up to `wait` while another holder has it
+    /// or while another program briefly keeps the file from being opened.
     pub fn acquire(path: &Path, wait: Duration) -> Result<Self> {
+        let failed = |action, source| EntraError::CredentialLockFailed {
+            action,
+            path: path.display().to_string(),
+            source,
+        };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                EntraError::from(error).context(format!(
-                    "creating the directory for the credential lock file {}",
-                    path.display()
-                ))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| failed("create the folder for", error))?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(|error| {
-                EntraError::from(error).context(format!(
-                    "opening the credential lock file {}",
-                    path.display()
-                ))
-            })?;
         let deadline = Instant::now() + wait;
+        let file = loop {
+            match OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)
+            {
+                Ok(file) => break file,
+                Err(error) if is_transient_open_error(&error) && Instant::now() < deadline => {
+                    std::thread::sleep(LOCK_POLL);
+                }
+                Err(error) => return Err(failed("open", error)),
+            }
+        };
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(Self { _file: file }),
@@ -90,15 +93,17 @@ impl CredentialLock {
                         seconds: wait.as_secs(),
                     });
                 }
-                Err(TryLockError::Error(error)) => {
-                    return Err(EntraError::from(error).context(format!(
-                        "locking the credential lock file {}",
-                        path.display()
-                    )));
-                }
+                Err(TryLockError::Error(error)) => return Err(failed("lock", error)),
             }
         }
     }
+}
+
+/// Windows refuses to open a file that antivirus or an indexer briefly holds
+/// open without sharing (a sharing violation, a lock violation, or access
+/// denied); those clear on their own, so they are retried like a busy lock.
+fn is_transient_open_error(error: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33))
 }
 
 #[derive(Debug, Default)]
@@ -223,10 +228,12 @@ fn lock_when_chunked(
 fn credential_lock_path() -> Result<std::path::PathBuf> {
     dirs::data_local_dir()
         .map(|root| root.join("entra").join(LOCK_FILE))
-        .ok_or_else(|| {
-            EntraError::message(
-                "could not find this account's local application data folder for the credential lock file; check that the account running entra has a loaded user profile and that its AppData\\Local folder exists and is writable",
-            )
+        .ok_or_else(|| EntraError::CredentialLockFailed {
+            action: "find the folder for",
+            path: LOCK_FILE.to_owned(),
+            source: std::io::Error::other(
+                "this account has no local application data folder; check that the account running entra has a loaded user profile and that its AppData\\Local folder exists and is writable",
+            ),
         })
 }
 
@@ -266,10 +273,13 @@ pub fn get_value(store: &dyn CredentialStore, key: &str) -> Result<String> {
 
 pub fn delete_value(store: &dyn CredentialStore, key: &str) -> Result<()> {
     let _lock = store.lock()?;
+    // The header goes first: if deletion stops part way, readers find no
+    // credential rather than a header pointing at missing chunks, and the
+    // next sign-in sweeps any chunks left behind.
+    store.delete(key)?;
     if CHUNK_BYTES.is_some() {
         delete_all_chunks(store, key)?;
     }
-    store.delete(key)?;
     Ok(())
 }
 
@@ -550,10 +560,17 @@ mod tests {
             store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
             store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
         }
+        // The header still names chunks, so this read assembles them, on
+        // every platform.
+        assert_eq!(get_value(&store, "account").unwrap(), value);
+        {
+            let _lock = store.lock().unwrap();
+            delete_all_chunks(&store, "account").unwrap();
+        }
         store_value(&store, "account", &value).unwrap();
         assert_eq!(get_value(&store, "account").unwrap(), value);
         delete_value(&store, "account").unwrap();
-        assert!(store.inner.get_password("account").unwrap().is_none());
+        assert!(store.inner.keys().is_empty(), "{:?}", store.inner.keys());
         // Outside every operation the lock is free again.
         assert!(!is_busy(&store.path));
     }
@@ -590,13 +607,50 @@ mod tests {
         let holder = CredentialLock::acquire(&path, Duration::ZERO).unwrap();
         let waiting_path = path.clone();
         let waiter = std::thread::spawn(move || {
-            CredentialLock::acquire(&waiting_path, Duration::from_secs(30)).map(drop)
+            CredentialLock::acquire(&waiting_path, Duration::from_secs(30))
+                .map(|_lock| Instant::now())
         });
-        // The waiter cannot finish while the lock is held.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(!waiter.is_finished());
+        std::thread::sleep(Duration::from_millis(100));
+        let released_at = Instant::now();
         drop(holder);
-        waiter.join().unwrap().unwrap();
+        // However the threads were scheduled, the waiter can only have got
+        // the lock after the holder let it go.
+        let acquired_at = waiter.join().unwrap().unwrap();
+        assert!(acquired_at >= released_at);
+    }
+
+    #[test]
+    fn deleting_removes_the_header_before_its_chunks() {
+        struct HeaderFirst(MemoryStore, std::sync::atomic::AtomicBool);
+        impl CredentialStore for HeaderFirst {
+            fn get_password(&self, key: &str) -> Result<Option<String>> {
+                self.0.get_password(key)
+            }
+            fn set_password(&self, key: &str, value: &str) -> Result<()> {
+                self.0.set_password(key, value)
+            }
+            fn get_secret(&self, key: &str) -> Result<Option<Vec<u8>>> {
+                self.0.get_secret(key)
+            }
+            fn set_secret(&self, key: &str, value: &[u8]) -> Result<()> {
+                self.0.set_secret(key, value)
+            }
+            fn delete(&self, key: &str) -> Result<bool> {
+                let deleting = self.1.load(std::sync::atomic::Ordering::SeqCst);
+                if deleting && key != "account" {
+                    assert!(
+                        self.0.get_password("account").unwrap().is_none(),
+                        "chunk {key} deleted while the header still pointed at it"
+                    );
+                }
+                self.0.delete(key)
+            }
+        }
+        let store = HeaderFirst(MemoryStore::default(), Default::default());
+        store_value_with_chunk_size(&store, "account", "0123456789", Some(4)).unwrap();
+        store.1.store(true, std::sync::atomic::Ordering::SeqCst);
+        delete_value(&store, "account").unwrap();
+        assert!(store.0.get_password("account").unwrap().is_none());
     }
 
     #[test]
