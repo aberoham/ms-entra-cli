@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Serialise credential storage across `entra` processes on Windows with a lock file in the configuration directory, so two processes refreshing one account at once can no longer interleave the pieces of its token, and a reader can no longer follow the header to pieces being deleted.
+- Serialise credential storage across `entra` processes on Windows with a per-user lock file, `%LOCALAPPDATA%\entra\credentials.lock`, so two processes refreshing one account at once can no longer interleave the pieces of its token, and a reader can no longer follow the header to pieces being deleted.
 
 ## v0.4.0 - 2026-11-07
 

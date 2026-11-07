@@ -14,9 +14,7 @@ const MAX_CHUNKS: usize = 128;
 // Serialises credential access across `entra` processes on Windows. The lock
 // covers storage operations only, never a network refresh, so the wait is
 // short unless another process has stopped part way through one.
-#[cfg_attr(not(windows), allow(dead_code))]
 const LOCK_FILE: &str = "credentials.lock";
-#[cfg_attr(not(windows), allow(dead_code))]
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 const LOCK_POLL: Duration = Duration::from_millis(25);
 
@@ -63,7 +61,12 @@ pub struct CredentialLock {
 impl CredentialLock {
     pub fn acquire(path: &Path, mode: LockMode, wait: Duration) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                EntraError::from(error).context(format!(
+                    "creating the directory for the credential lock file {}",
+                    path.display()
+                ))
+            })?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -89,11 +92,10 @@ impl CredentialLock {
                     std::thread::sleep(LOCK_POLL);
                 }
                 Err(TryLockError::WouldBlock) => {
-                    return Err(EntraError::message(format!(
-                        "another entra process has held the credential lock {} for over {} seconds; wait for it to finish and try again",
-                        path.display(),
-                        wait.as_secs()
-                    )));
+                    return Err(EntraError::CredentialLockBusy {
+                        path: path.display().to_string(),
+                        seconds: wait.as_secs(),
+                    });
                 }
                 Err(TryLockError::Error(error)) => {
                     return Err(EntraError::from(error).context(format!(
@@ -207,9 +209,18 @@ impl CredentialStore for KeyringStore {
         if CHUNK_BYTES.is_none() {
             return Ok(None);
         }
-        let path = crate::config::config_dir()?.join(LOCK_FILE);
-        CredentialLock::acquire(&path, mode, LOCK_WAIT).map(Some)
+        CredentialLock::acquire(&credential_lock_path()?, mode, LOCK_WAIT).map(Some)
     }
+}
+
+/// The lock file for this user's credentials. It is deliberately not under
+/// the configuration directory: `ENTRA_CONFIG_DIR` moves that, but not the
+/// credential store, and two processes guarding the same credentials must
+/// always meet at the same lock.
+fn credential_lock_path() -> Result<std::path::PathBuf> {
+    dirs::data_local_dir()
+        .map(|root| root.join("entra").join(LOCK_FILE))
+        .ok_or_else(|| EntraError::message("could not determine the user's local data directory"))
 }
 
 /// Chunks live in one of two slots so that a rewrite never touches the chunks
@@ -460,6 +471,84 @@ mod tests {
             store.locks(),
             [LockMode::Exclusive, LockMode::Shared, LockMode::Exclusive]
         );
+    }
+
+    /// A store that locks a real file and checks, inside every storage
+    /// operation, that the lock is still held.
+    struct LockCheckingStore {
+        inner: MemoryStore,
+        path: std::path::PathBuf,
+    }
+
+    impl LockCheckingStore {
+        fn assert_locked(&self) {
+            assert!(
+                CredentialLock::acquire(&self.path, LockMode::Exclusive, Duration::ZERO).is_err(),
+                "a storage operation ran without the credential lock"
+            );
+        }
+    }
+
+    impl CredentialStore for LockCheckingStore {
+        fn get_password(&self, key: &str) -> Result<Option<String>> {
+            self.assert_locked();
+            self.inner.get_password(key)
+        }
+
+        fn set_password(&self, key: &str, value: &str) -> Result<()> {
+            self.assert_locked();
+            self.inner.set_password(key, value)
+        }
+
+        fn get_secret(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.assert_locked();
+            self.inner.get_secret(key)
+        }
+
+        fn set_secret(&self, key: &str, value: &[u8]) -> Result<()> {
+            self.assert_locked();
+            self.inner.set_secret(key, value)
+        }
+
+        fn delete(&self, key: &str) -> Result<bool> {
+            self.assert_locked();
+            self.inner.delete(key)
+        }
+
+        fn lock(&self, mode: LockMode) -> Result<Option<CredentialLock>> {
+            CredentialLock::acquire(&self.path, mode, Duration::from_secs(1)).map(Some)
+        }
+    }
+
+    #[test]
+    fn every_storage_operation_runs_while_the_lock_is_held() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LockCheckingStore {
+            inner: MemoryStore::default(),
+            path: directory.path().join(LOCK_FILE),
+        };
+        let value = "x".repeat(10);
+        // A chunk size of four splits the value across slots, as on Windows.
+        {
+            let _lock = store.lock(LockMode::Exclusive).unwrap();
+            store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
+            store_value_with_chunk_size(&store, "account", &value, Some(4)).unwrap();
+        }
+        store_value(&store, "account", &value).unwrap();
+        assert_eq!(get_value(&store, "account").unwrap(), value);
+        delete_value(&store, "account").unwrap();
+        assert!(store.inner.get_password("account").unwrap().is_none());
+        // Outside every operation the lock is free again.
+        CredentialLock::acquire(&store.path, LockMode::Exclusive, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn a_busy_lock_has_its_own_error_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(LOCK_FILE);
+        let _writer = CredentialLock::acquire(&path, LockMode::Exclusive, Duration::ZERO).unwrap();
+        let error = CredentialLock::acquire(&path, LockMode::Shared, Duration::ZERO).unwrap_err();
+        assert_eq!(error.metadata(), ("CredentialLockBusy", 0));
     }
 
     #[test]

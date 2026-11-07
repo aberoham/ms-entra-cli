@@ -165,9 +165,11 @@ not discard its access-control list. On Windows, preserve the bounded raw-byte
 chunk format headed by the canonical token key, its two alternating chunk slots
 (a rewrite never touches the slot the live header uses), stale-chunk cleanup,
 and legacy single-entry reads, and the cross-process lock: `store_value` and
-`delete_value` hold an exclusive lock on `credentials.lock` in the config
-directory and `get_value` a shared one, for storage operations only, never
-across a network refresh. Only `KeyringStore` on Windows locks; macOS and
+`delete_value` hold an exclusive lock on `credentials.lock` in the per-user
+local data directory (not the config directory, which `ENTRA_CONFIG_DIR`
+moves while the credential store stays put) and `get_value` a shared one, for
+storage operations only, never across a network refresh. A timeout is the
+typed `CredentialLockBusy` error. Only `KeyringStore` on Windows locks; macOS and
 Linux replace a single item atomically. Background refresh may fall back to a not-yet-
 expired access token; explicit `auth refresh` must persist successfully.
 

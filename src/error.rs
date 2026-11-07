@@ -73,6 +73,11 @@ pub enum EntraError {
         source: Box<EntraError>,
     },
 
+    #[error(
+        "another entra process kept the credential lock {path} busy for over {seconds} seconds; wait for it to finish and try again"
+    )]
+    CredentialLockBusy { path: String, seconds: u64 },
+
     #[error("{context}: {source}")]
     Context {
         context: String,
@@ -211,6 +216,7 @@ impl EntraError {
             Self::UserNotFound { .. } => ("ResourceNotFound", 404),
             Self::AmbiguousUser { .. } => ("AmbiguousUser", 0),
             Self::InexactName { .. } => ("InexactNameMatch", 0),
+            Self::CredentialLockBusy { .. } => ("CredentialLockBusy", 0),
             Self::Graph { status, code, .. } => {
                 if code.eq_ignore_ascii_case("Request_ResourceNotFound") {
                     ("ResourceNotFound", *status)
