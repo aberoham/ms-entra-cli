@@ -764,14 +764,7 @@ async fn run_login(
         if !login.directory {
             eprintln!("{note}");
         }
-        let result = LoginResult {
-            account: info.email.clone(),
-            display_name: info.display_name.clone(),
-            tenant_id: info.tenant_id.clone(),
-            client_id: info.client_id.clone(),
-        };
-        let value = output.wrapped_json_value(&result, LoginResult::wrap_untrusted)?;
-        return write_pretty_json(io::stdout(), &value);
+        return write_pretty_json(io::stdout(), &login_json(output, &info)?);
     }
     println!(
         "Logged in as {} ({})",
@@ -793,6 +786,17 @@ struct LoginResult {
     display_name: String,
     tenant_id: String,
     client_id: String,
+}
+
+/// The `auth login --json` document for a completed sign-in.
+fn login_json(output: &OutputOptions, info: &AccountInfo) -> Result<Value> {
+    let result = LoginResult {
+        account: info.email.clone(),
+        display_name: info.display_name.clone(),
+        tenant_id: info.tenant_id.clone(),
+        client_id: info.client_id.clone(),
+    };
+    output.wrapped_json_value(&result, LoginResult::wrap_untrusted)
 }
 
 impl LoginResult {
@@ -3714,29 +3718,48 @@ mod tests {
     }
 
     #[test]
-    fn login_json_wraps_the_display_name_when_asked() {
-        let result = LoginResult {
-            account: "alex@example.test".into(),
+    fn login_json_has_four_fields_and_wraps_only_the_display_name() {
+        let info = AccountInfo {
+            email: "alex@example.test".into(),
             display_name: "Alex Smith".into(),
             tenant_id: "00000000-0000-4000-8000-000000000091".into(),
             client_id: "00000000-0000-4000-8000-000000000092".into(),
+            login_time: "2026-11-07T12:00:00Z".into(),
         };
-        let plain = json_output(false)
-            .wrapped_json_value(&result, LoginResult::wrap_untrusted)
-            .unwrap();
-        assert_eq!(plain["results"]["displayName"], "Alex Smith");
-        assert_eq!(plain["results"]["tenantId"], result.tenant_id);
-
-        let wrapping = OutputOptions {
-            wrap_untrusted: true,
-            ..json_output(false)
-        };
-        let wrapped = wrapping
-            .wrapped_json_value(&result, LoginResult::wrap_untrusted)
-            .unwrap();
-        let name = wrapped["results"]["displayName"].as_str().unwrap();
-        assert!(name.starts_with("[UNTRUSTED:") && name.contains("Alex Smith"));
-        assert!(wrapped.get("untrustedNotice").is_some());
-        assert_eq!(wrapped["results"]["account"], "alex@example.test");
+        for (wrap_untrusted, results_only) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let output = OutputOptions {
+                wrap_untrusted,
+                ..json_output(results_only)
+            };
+            let value = login_json(&output, &info).unwrap();
+            let result = if results_only {
+                &value
+            } else {
+                &value["results"]
+            };
+            let mut keys: Vec<_> = result.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            assert_eq!(keys, ["account", "clientId", "displayName", "tenantId"]);
+            assert_eq!(result["account"], info.email);
+            assert_eq!(result["tenantId"], info.tenant_id);
+            let name = result["displayName"].as_str().unwrap();
+            if wrap_untrusted {
+                let id = name
+                    .strip_prefix("[UNTRUSTED:")
+                    .and_then(|rest| rest.split_once(']'))
+                    .map(|(id, _)| id)
+                    .unwrap();
+                assert_eq!(name, format!("[UNTRUSTED:{id}]Alex Smith[/UNTRUSTED:{id}]"));
+            } else {
+                assert_eq!(name, "Alex Smith");
+            }
+            assert_eq!(
+                value.get("untrustedNotice").is_some(),
+                wrap_untrusted && !results_only
+            );
+            assert_eq!(value.get("count").is_some(), !results_only);
+        }
     }
 }

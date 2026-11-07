@@ -69,7 +69,7 @@ display name in `auth login` and `auth status` is marked as untrusted:
 | `auth refresh` | `{"account", "expiresAt", "scope"}` |
 | `auth logout` | `{"account", "signedOut": true}` |
 | `auth list` | One `{"email", "display_name", "tenant_id", "client_id", "login_time"}` per stored account |
-| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the expiry of the access token the check used, which is a fresh one when the stored token was near expiry; `--results-only` returns the profile alone. |
+| `auth status` | The signed-in account's profile, as `whoami --json` returns it. The envelope adds `"account"` and `"expiresAt"`, the expiry of the access token the check actually used, including a refreshed token that could not be stored; `--results-only` returns the profile alone. |
 | `version` | `{"version", "commit", "built"}`; `commit` and `built` are `null` in a local build. |
 
 Account files are keyed by the primary email shown by `entra auth list`, but
