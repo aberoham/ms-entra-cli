@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Serialise credential storage across `entra` processes on Windows with a per-user lock file, `%LOCALAPPDATA%\entra\credentials.lock`, so two processes refreshing one account at once can no longer interleave the pieces of its token, and a reader can no longer follow the header to pieces being deleted. An `entra` process started from an earlier version does not take the lock, so finish or close those before relying on it.
+
 ## v0.4.0 - 2026-11-07
 
 - Add `entra reports copilot-usage`, listing each person's Microsoft 365 Copilot active days and prompts with their company; `--by-company` totals people, active people and prompts per company.

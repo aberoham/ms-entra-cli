@@ -201,6 +201,19 @@ set before switching the header, so an interrupted update keeps the previous
 sign-in. `auth logout` removes every entry. If a size-limit error still appears, report it as a bug with the
 output of `entra --verbose auth status`, after removing any tokens from it.
 
+## `another entra process kept the credential lock ... busy`
+
+The JSON error code is `CredentialLockBusy`. On Windows, `entra` takes a lock
+on `%LOCALAPPDATA%\entra\credentials.lock` while it reads, writes or deletes
+stored credentials, so two processes cannot interleave the pieces of one
+token. The lock is held only for those storage operations, never during a
+network request, and the operating system releases it when a process exits.
+This error means other `entra` processes kept it busy for more than ten
+seconds of retries, either one slow operation or several in a row. A related
+code, `CredentialLockFailed`, means the lock file itself could not be found,
+opened or locked; the message names the file and the operating-system error. Let them finish, or end a stuck one in Task Manager, then run the
+command again.
+
 ## Manager lookups work but `user get` shows few fields
 
 You are signed in without `--directory`. `User.ReadBasic.All` returns only
