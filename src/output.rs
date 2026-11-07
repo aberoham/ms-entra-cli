@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::Result;
 use crate::model::{CompanyCount, GroupMembership, SubscribedSku, User};
@@ -19,6 +19,9 @@ pub struct OutputOptions {
     pub select: String,
     pub results_only: bool,
     pub wrap_untrusted: bool,
+    /// How a name key was resolved, added to the JSON envelope as `lookup`
+    /// so a caller can see that the person was found by name.
+    pub lookup: Option<Value>,
 }
 
 impl OutputOptions {
@@ -27,7 +30,17 @@ impl OutputOptions {
         if self.results_only {
             return Ok(value);
         }
-        Ok(json!({"results": value, "count": count}))
+        let mut envelope = serde_json::Map::new();
+        self.insert_lookup(&mut envelope);
+        envelope.insert("results".into(), value);
+        envelope.insert("count".into(), Value::from(count));
+        Ok(Value::Object(envelope))
+    }
+
+    fn insert_lookup(&self, envelope: &mut serde_json::Map<String, Value>) {
+        if let Some(lookup) = &self.lookup {
+            envelope.insert("lookup".into(), lookup.clone());
+        }
     }
 
     pub fn users_json_value(&self, users: &[User]) -> Result<Value> {
@@ -67,6 +80,7 @@ impl OutputOptions {
         if let Some(notice) = notice {
             envelope.insert("untrustedNotice".into(), Value::String(notice));
         }
+        self.insert_lookup(&mut envelope);
         envelope.insert("results".into(), results);
         envelope.insert("count".into(), Value::from(rows.len()));
         Ok(Value::Object(envelope))
@@ -87,6 +101,7 @@ impl OutputOptions {
         if let Some(notice) = notice {
             envelope.insert("untrustedNotice".into(), Value::String(notice));
         }
+        self.insert_lookup(&mut envelope);
         envelope.insert("results".into(), result);
         envelope.insert("count".into(), Value::from(1));
         Ok(Value::Object(envelope))
@@ -452,6 +467,7 @@ mod tests {
             select: "EMAIL,NAME".into(),
             results_only: false,
             wrap_untrusted: false,
+            lookup: None,
         };
         let mut output = Vec::new();
         write_rows(

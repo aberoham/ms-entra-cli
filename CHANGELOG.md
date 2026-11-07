@@ -6,6 +6,7 @@
 - Add `entra licences holders --sku <name|sku-id>`, listing everyone who holds a licence; `--by-company` counts holders per company instead. A SKU id needs only `User.Read.All`.
 - Add `--licences` to `auth login` and `auth refresh`, requesting `LicenseAssignment.Read.All`; the setup script now includes that permission.
 - Make `auth refresh` with scope flags add those scopes to the ones already stored, instead of replacing them, so `auth refresh --licences` no longer drops `AuditLog.Read.All` or other permissions the session held.
+- Accept a name as the key for `user get`, `manager`, `reports`, `chain` and `groups`. A key with no `@` that is not an object id is matched as a prefix of display name or surname, and exactly one person must match. Table output opens with a warning naming that person. `--json` and `--plain` accept only an exact display name or surname (error code `InexactNameMatch` otherwise) and add a `lookup` field to the JSON envelope. Several matches fail with the error code `AmbiguousUser` and a list of candidates.
 - Remove invisible Unicode characters, such as zero-width spaces and bidirectional controls, from table, plain and detail output and from messages, so they can no longer hide characters or reorder what the terminal shows. Other non-ASCII text is kept. JSON output, including deep `--plain` records, keeps each value as Graph returned it.
 
 ## v0.3.0 - 2026-10-13

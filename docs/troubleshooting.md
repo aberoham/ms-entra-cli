@@ -56,6 +56,22 @@ common ones for this tool:
 | `AADSTS7000218` | Public client flows are turned off, so device code sign-in fails. | Set **Authentication > Allow public client flows** to **Yes**. |
 | `AADSTS50011` | The redirect URI does not match, so `--browser` sign-in fails. | Add the **Public client/native** redirect URI `http://localhost/callback`. |
 
+## `"..." matches more than one directory user`
+
+A key with no `@` that is not an object id is looked up as a name, and more
+than one person's display name or surname starts with it. The JSON error code
+is `AmbiguousUser`. The message lists up to five of the matches. Run
+`entra user search <key>`, adding `-n` for more than 25 results, then pass the
+full address or object id of the person you mean.
+
+## `"..." is not an exact display name or surname`
+
+The JSON error code is `InexactNameMatch`. With `--json` or `--plain`, a name
+key must equal someone's display name or surname, and this key only starts
+the name of the person the message shows. Pass that person's full address or
+object id if they are the one you meant. Table output accepts the same match
+but opens with a warning.
+
 ## `no directory user matches "..."`
 
 The address does not resolve. Two common causes, in order of likelihood:
@@ -69,10 +85,12 @@ The address does not resolve. Two common causes, in order of likelihood:
 2. **The account no longer exists.** People who leave are removed from the
    directory, but can remain in other systems that were never updated. If you
    are comparing another system against the directory, treat this as a
-   finding.
+   finding. Compare by address or object id, not by name: a leaver's
+   name can match a current colleague whose name starts the same way.
 
 The message means `entra` tried the value as a sign-in name/object id and also
-searched primary mail and proxy addresses. Microsoft Graph's raw 404 adds “or
+searched primary mail and proxy addresses. For a key with no `@` that is not
+an object id, it means no display name or surname starts with that text. Microsoft Graph's raw 404 adds “or
 one of its queried reference-property objects are not present”; for `user get`
 that wording is usually a distraction, because the direct `/users/{key}` route
 simply does not accept an otherwise-valid mail alias. Deep `--all` and `--group`
