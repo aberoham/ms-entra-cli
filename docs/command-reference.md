@@ -114,9 +114,10 @@ requires an immutable object id for some projections such as
 `signInActivity`. Callers never need to resolve or paste that id themselves.
 
 A key with no `@` that is not an object id can only be a name, because every
-sign-in name contains `@`. `entra` runs the same prefix match as
-`user search` over display name, surname, mail and sign-in name, and uses the
-person it finds. It writes `notice: "<key>" matched <name> <sign-in name>` to
+sign-in name contains `@`. `entra` looks for people whose display name or
+surname starts with it, and uses the person it finds. Unlike `user search`, it
+does not match mail or sign-in name prefixes, so a short key cannot single out
+someone by an address such as `announcements@`. It writes `notice: "<key>" matched <name> <sign-in name>` to
 standard error, so a wrong match is visible even under `--json`. If the name
 matches more than one person, the command fails with the code `AmbiguousUser`
 and lists up to five of them; pass a full address or object id instead. It

@@ -351,13 +351,21 @@ impl GraphClient {
         Ok(chain)
     }
 
-    /// Finds the one person a name refers to, using the same prefix match as
-    /// `search_users`. More than one match is an error that lists the
-    /// candidates, because every caller acts on exactly one person and must
-    /// not guess which.
+    /// Finds the one person a name refers to, by a prefix match on display
+    /// name and surname only: a mail or sign-in prefix such as `ann` for
+    /// `announcements@` could otherwise single out someone the caller never
+    /// named. More than one match is an error that lists the candidates,
+    /// because every caller acts on exactly one person and must not guess.
     pub async fn resolve_by_name(&self, key: &str) -> Result<User> {
-        let mut found = self.search_users(key, NAME_MATCH_LIMIT).await?;
-        found.retain(|user| !user.id.is_empty());
+        let escaped = odata_literal(key)?;
+        let filter =
+            format!("startswith(displayName,'{escaped}') or startswith(surname,'{escaped}')");
+        let mut found = self.find_users(&filter, NAME_MATCH_LIMIT, key).await?;
+        if found.iter().any(|user| user.id.is_empty()) {
+            return Err(EntraError::message(format!(
+                "Graph returned a match for {key:?} without an object id, so the name cannot be resolved safely; pass a full address instead"
+            )));
+        }
         match found.len() {
             0 => Err(EntraError::UserNotFound {
                 key: key.to_owned(),
@@ -378,10 +386,14 @@ impl GraphClient {
         let filter = format!(
             "startswith(displayName,'{escaped}') or startswith(mail,'{escaped}') or startswith(userPrincipalName,'{escaped}') or startswith(surname,'{escaped}')"
         );
+        self.find_users(&filter, top, query).await
+    }
+
+    async fn find_users(&self, filter: &str, top: usize, query: &str) -> Result<Vec<User>> {
         let mut url = self.collection_url("users")?;
         url.query_pairs_mut()
             .append_pair("$select", &PROFILE_FIELDS.join(","))
-            .append_pair("$filter", &filter)
+            .append_pair("$filter", filter)
             .append_pair("$top", &top.max(1).to_string());
         self.get_all_pages(url, Some(top.max(1)))
             .await
@@ -852,6 +864,51 @@ mod tests {
             ]
         );
         assert!(!error.is_not_found());
+    }
+
+    #[tokio::test]
+    async fn a_name_matches_display_name_and_surname_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param(
+                "$filter",
+                "startswith(displayName,'ann') or startswith(surname,'ann')",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": [] })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("ann")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EntraError::UserNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_match_without_an_object_id_is_refused_not_skipped() {
+        let server = MockServer::start().await;
+        mount_name_search(
+            &server,
+            vec![
+                person("00000000-0000-4000-8000-000000000045", "Alex Smith"),
+                json!({"displayName": "No Id Smith"}),
+            ],
+        )
+        .await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("Smith")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("without an object id"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

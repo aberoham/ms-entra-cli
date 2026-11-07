@@ -58,11 +58,11 @@ common ones for this tool:
 
 ## `"..." matches more than one directory user`
 
-A key with no `@` is looked up as a name, and more than one person's display
-name, surname, mail or sign-in name starts with it. The JSON error code is
-`AmbiguousUser`. The message lists up to five of the matches; run
-`entra user search <key>` to see every one, then pass the full address or
-object id of the person you mean.
+A key with no `@` that is not an object id is looked up as a name, and more
+than one person's display name or surname starts with it. The JSON error code
+is `AmbiguousUser`. The message lists up to five of the matches. Run
+`entra user search <key>`, adding `-n` for more than 25 results, then pass the
+full address or object id of the person you mean.
 
 ## `no directory user matches "..."`
 
@@ -80,8 +80,8 @@ The address does not resolve. Two common causes, in order of likelihood:
    finding.
 
 The message means `entra` tried the value as a sign-in name/object id and also
-searched primary mail and proxy addresses. For a key with no `@`, it means no
-display name, surname, mail or sign-in name starts with that text. Microsoft Graph's raw 404 adds “or
+searched primary mail and proxy addresses. For a key with no `@` that is not
+an object id, it means no display name or surname starts with that text. Microsoft Graph's raw 404 adds “or
 one of its queried reference-property objects are not present”; for `user get`
 that wording is usually a distraction, because the direct `/users/{key}` route
 simply does not accept an otherwise-valid mail alias. Deep `--all` and `--group`

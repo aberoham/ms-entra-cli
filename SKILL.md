@@ -130,8 +130,9 @@ ID. `entra` resolves address-shaped inputs over `mail`, `userPrincipalName` and
 `proxyAddresses` before deep reads. Either address works; callers do not need
 to paste an object ID.
 
-A key with no `@` that is not an object ID is treated as a name: `entra` runs
-the `user search` prefix match and, when exactly one person matches, uses them
+A key with no `@` that is not an object ID is treated as a name: `entra`
+matches it as a prefix of display name or surname (not mail, unlike
+`user search`) and, when exactly one person matches, uses them
 and prints `notice: "<key>" matched <name> <sign-in name>` on stderr. Check
 that notice before relying on the result. More than one match fails with the
 JSON error code `AmbiguousUser` and lists up to five candidates; rerun with a

@@ -104,8 +104,11 @@ object id for relationship and deep-attribute reads.
 
 A key with no `@` that is not a UUID can only be a name, because every
 sign-in name contains `@`. `run_user` resolves such a key once, through
-`GraphClient::resolve_by_name`, before the command's first read, and passes
-the object id on. Exactly one match proceeds with a stderr notice naming the
+`GraphClient::resolve_by_name`, a prefix match on display name and surname
+only, before the command's first read. Summary `user get` uses the matched
+record; every other command passes its object id on. An empty key is refused
+before authentication, and a match without an object id is an error, not a
+skipped row. Exactly one match proceeds with a stderr notice naming the
 person; several matches fail with `AmbiguousUser` and never pick one; none is
 `UserNotFound`. Addresses and object ids never trigger the name search.
 

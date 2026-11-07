@@ -413,6 +413,14 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
     let Command::User(UserArgs { command }) = command else {
         return Ok(());
     };
+    if let Some(key) = person_key(command) {
+        if key.trim().is_empty() {
+            return Err(EntraError::message(
+                "the person to look up is empty; pass an address, object id or name",
+            ));
+        }
+        odata_literal(key)?;
+    }
     match command {
         UserCommand::Get(get) => {
             selected_properties(get)?;
@@ -425,12 +433,21 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
                 ));
             }
         }
-        UserCommand::Groups { key, .. } => {
-            odata_literal(key)?;
-        }
         _ => {}
     }
     Ok(())
+}
+
+/// The person a user command looks up, for the commands that take one.
+fn person_key(command: &UserCommand) -> Option<&str> {
+    match command {
+        UserCommand::Get(get) => Some(&get.key),
+        UserCommand::Manager { key }
+        | UserCommand::Reports { key }
+        | UserCommand::Groups { key, .. }
+        | UserCommand::Chain { key, .. } => Some(key),
+        UserCommand::Search { .. } | UserCommand::List(_) => None,
+    }
 }
 
 async fn run_auth(
@@ -2279,6 +2296,19 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("unreadable SKU id"));
+    }
+
+    #[test]
+    fn an_empty_person_key_is_refused_before_authentication() {
+        for command in ["get", "manager", "reports", "chain", "groups"] {
+            for key in ["", "   "] {
+                let cli = Cli::try_parse_from(["entra", "user", command, key]).unwrap();
+                let error = validate_command(&cli.command, false).unwrap_err();
+                assert!(error.to_string().contains("empty"), "{command} {key:?}");
+            }
+        }
+        let cli = Cli::try_parse_from(["entra", "user", "manager", "Smith"]).unwrap();
+        assert!(validate_command(&cli.command, false).is_ok());
     }
 
     #[test]

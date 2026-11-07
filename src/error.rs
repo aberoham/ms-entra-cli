@@ -10,7 +10,7 @@ pub enum EntraError {
     UserNotFound { key: String },
 
     #[error(
-        "{key:?} matches more than one directory user: {}. Run 'entra user search' to see every match, then pass a full address or object id",
+        "{key:?} matches more than one directory user: {}. Find the person with 'entra user search' (raise -n for more results), then pass their full address or object id",
         .candidates.join("; ")
     )]
     AmbiguousUser {
