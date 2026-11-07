@@ -130,13 +130,16 @@ ID. `entra` resolves address-shaped inputs over `mail`, `userPrincipalName` and
 `proxyAddresses` before deep reads. Either address works; callers do not need
 to paste an object ID.
 
-A key with no `@` that is not an object ID is treated as a name: `entra`
-matches it as a prefix of display name or surname (not mail, unlike
-`user search`) and, when exactly one person matches, uses them
-and prints `notice: "<key>" matched <name> <sign-in name>` on stderr. Check
-that notice before relying on the result. More than one match fails with the
-JSON error code `AmbiguousUser` and lists up to five candidates; rerun with a
-full address from that list.
+A key with no `@` that is not an object ID is treated as a name, matched as a
+prefix of display name or surname (not mail, unlike `user search`). Exactly
+one match is required. With `--json` or `--plain` the key must equal that
+person's display name or surname; a key that only starts it fails with
+`InexactNameMatch`, naming the person it would have matched. An exact match
+adds `"lookup": {"key", "matchedBy": "exactName", "id"}` to the JSON envelope.
+Table output also accepts a prefix match but opens with a `WARNING:` line.
+More than one match fails with `AmbiguousUser` and lists up to five
+candidates. For audits and leaver checks, use full addresses or object IDs:
+a leaver's name can match a current colleague with a similar name.
 
 **`user get` is how you settle whether two addresses are one mailbox or two.**
 It prints the alias list and marks the primary. A directory search showing two

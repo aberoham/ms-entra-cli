@@ -115,13 +115,26 @@ requires an immutable object id for some projections such as
 
 A key with no `@` that is not an object id can only be a name, because every
 sign-in name contains `@`. `entra` looks for people whose display name or
-surname starts with it, and uses the person it finds. Unlike `user search`, it
-does not match mail or sign-in name prefixes, so a short key cannot single out
-someone by an address such as `announcements@`. It writes `notice: "<key>" matched <name> <sign-in name>` to
-standard error, so a wrong match is visible even under `--json`. If the name
-matches more than one person, the command fails with the code `AmbiguousUser`
-and lists up to five of them; pass a full address or object id instead. It
-never picks one for you.
+surname starts with it. Unlike `user search`, it does not match mail or sign-in
+name prefixes, so a short key cannot single out someone by an address such as
+`announcements@`. The rules depend on the output format:
+
+- **Table output** (the default) uses the one person found and opens with a
+  `WARNING:` line naming them. The warning is stronger when the key only starts
+  that person's name: `"Sam"` can find Samantha Jones when the Sam you meant
+  has left.
+- **`--json` and `--plain`** accept only an exact display name or surname,
+  ignoring case, because scripts do not read warnings. A key that only starts
+  someone's name fails with the error code `InexactNameMatch`, which names the
+  person it would have matched. An exact match adds
+  `"lookup": {"key": ..., "matchedBy": "exactName", "id": ...}` to the
+  `{results, count}` envelope and writes a `notice:` line to standard error.
+  `--results-only` and deep `user get --all/--group` JSON have no envelope, so
+  there the notice on standard error is the only sign.
+
+If the name matches more than one person, the command fails with the code
+`AmbiguousUser` and lists up to five of them. It never picks one for you. For
+an audit or a leaver check, pass full addresses or object ids, not names.
 
 `user get` prints every alias and marks which is primary — the way to establish
 whether two addresses are one mailbox or two. Mailbox addresses

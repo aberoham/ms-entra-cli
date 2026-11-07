@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::error::{EntraError, Result};
 use crate::model::{Group, Page, SubscribedSku, User};
+use crate::output::sanitize;
 
 pub const GRAPH_V1: &str = "https://graph.microsoft.com/v1.0/";
 const MAX_QUERY_LENGTH: usize = 256;
@@ -31,6 +32,44 @@ const NAME_MATCH_LIMIT: usize = 5;
 /// `@`, so any other key would always miss there.
 pub fn is_name_key(key: &str) -> bool {
     !key.contains('@') && Uuid::parse_str(key).is_err()
+}
+
+/// How a name lookup matched its one person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameMatch {
+    /// The key equals the person's display name or surname, ignoring case.
+    Exact,
+    /// The person's display name or surname only starts with the key.
+    Prefix,
+}
+
+/// The one person a name lookup found, and how the name matched them.
+#[derive(Debug, Clone)]
+pub struct NamedUser {
+    pub user: User,
+    pub matched: NameMatch,
+}
+
+/// A person as `Name <sign-in name>`, sanitised because it ends up in error
+/// messages that reach both the terminal and JSON.
+pub fn person_label(user: &User) -> String {
+    format!(
+        "{} <{}>",
+        sanitize(&user.display_name),
+        sanitize(&user.user_principal_name)
+    )
+}
+
+fn name_match(key: &str, user: &User) -> NameMatch {
+    let key = key.trim().to_lowercase();
+    let exact = [&user.display_name, &user.surname]
+        .iter()
+        .any(|name| name.trim().to_lowercase() == key);
+    if exact {
+        NameMatch::Exact
+    } else {
+        NameMatch::Prefix
+    }
 }
 
 pub const PROFILE_FIELDS: &[&str] = &[
@@ -356,7 +395,7 @@ impl GraphClient {
     /// `announcements@` could otherwise single out someone the caller never
     /// named. More than one match is an error that lists the candidates,
     /// because every caller acts on exactly one person and must not guess.
-    pub async fn resolve_by_name(&self, key: &str) -> Result<User> {
+    pub async fn resolve_by_name(&self, key: &str) -> Result<NamedUser> {
         let escaped = odata_literal(key)?;
         let filter =
             format!("startswith(displayName,'{escaped}') or startswith(surname,'{escaped}')");
@@ -370,13 +409,14 @@ impl GraphClient {
             0 => Err(EntraError::UserNotFound {
                 key: key.to_owned(),
             }),
-            1 => Ok(found.remove(0)),
+            1 => {
+                let user = found.remove(0);
+                let matched = name_match(key, &user);
+                Ok(NamedUser { user, matched })
+            }
             _ => Err(EntraError::AmbiguousUser {
                 key: key.to_owned(),
-                candidates: found
-                    .iter()
-                    .map(|user| format!("{} <{}>", user.display_name, user.user_principal_name))
-                    .collect(),
+                candidates: found.iter().map(person_label).collect(),
             }),
         }
     }
@@ -833,7 +873,8 @@ mod tests {
             .resolve_by_name("Smith")
             .await
             .unwrap();
-        assert_eq!(user.id, id);
+        assert_eq!(user.user.id, id);
+        assert_eq!(user.matched, NameMatch::Prefix);
     }
 
     #[tokio::test]
@@ -909,6 +950,55 @@ mod tests {
             error.to_string().contains("without an object id"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_apostrophe_in_a_name_is_doubled_in_the_filter() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param(
+                "$filter",
+                "startswith(displayName,'O''Brien') or startswith(surname,'O''Brien')",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "00000000-0000-4000-8000-000000000046", "displayName": "Pat O'Brien", "surname": "O'Brien"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let named = client(&server)
+            .await
+            .resolve_by_name("O'Brien")
+            .await
+            .unwrap();
+        assert_eq!(named.matched, NameMatch::Exact);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_candidates_are_sanitised() {
+        let server = MockServer::start().await;
+        mount_name_search(
+            &server,
+            vec![
+                json!({"id": "00000000-0000-4000-8000-000000000047", "displayName": "Alex\nError: forged\u{202e}", "userPrincipalName": "a\tb@example.test"}),
+                person("00000000-0000-4000-8000-000000000048", "Sam Smith"),
+            ],
+        )
+        .await;
+
+        let error = client(&server)
+            .await
+            .resolve_by_name("Smith")
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("Alex Error: forged <a b@example.test>"),
+            "{message:?}"
+        );
+        assert!(!message.contains(['\n', '\t', '\u{202e}']), "{message:?}");
     }
 
     #[tokio::test]

@@ -14,7 +14,9 @@ use crate::attributes::{
 use crate::auth::{requested_scopes, AccountInfo, Authenticator, ScopeFlags};
 use crate::config::{ClientConfig, Config, DEFAULT_TENANT_ID};
 use crate::error::{EntraError, Result};
-use crate::graph::{is_name_key, odata_literal, GraphClient, PROFILE_FIELDS};
+use crate::graph::{
+    is_name_key, odata_literal, person_label, GraphClient, NameMatch, NamedUser, PROFILE_FIELDS,
+};
 use crate::model::{CompanyCount, GroupKind, GroupMembership, SubscribedSku, User};
 use crate::output::{
     sanitize, sanitize_multiline, write_company_counts, write_group_memberships,
@@ -306,7 +308,7 @@ impl UserList {
 
 #[derive(Debug, Clone, Args)]
 struct UserGet {
-    #[arg(help = "Sign-in name, email address or object id")]
+    #[arg(help = "Sign-in name, email address, object id or name")]
     key: String,
     #[arg(long, help = "Retrieve every directory attribute, not the summary set")]
     all: bool,
@@ -369,6 +371,7 @@ async fn run(mut cli: Cli) -> Result<()> {
         select: cli.select.clone(),
         results_only: cli.results_only,
         wrap_untrusted: cli.wrap_untrusted,
+        lookup: None,
     };
     let store: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
     match cli.command.clone() {
@@ -816,9 +819,9 @@ async fn run_user(
             run_user_get(output, graph, get, allow_sign_in_activity_fallback).await
         }
         UserCommand::Manager { key } => {
-            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
-            let manager = graph.get_manager(&lookup).await?;
-            match manager {
+            let person = resolve_person(graph, output, &key).await?;
+            let output = &person.output;
+            match graph.get_manager(&person.graph_key).await? {
                 Some(user) => write_users(io::stdout(), output, &[user]),
                 None if output.format == OutputFormat::Json => {
                     write_users(io::stdout(), output, &[])
@@ -833,24 +836,24 @@ async fn run_user(
             }
         }
         UserCommand::Reports { key } => {
-            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
-            let reports = graph.get_direct_reports(&lookup).await?;
-            write_users(io::stdout(), output, &reports)
+            let person = resolve_person(graph, output, &key).await?;
+            let reports = graph.get_direct_reports(&person.graph_key).await?;
+            write_users(io::stdout(), &person.output, &reports)
         }
         UserCommand::Groups { key, kind } => {
-            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
-            let (transitive, direct) = graph.get_group_memberships(&lookup).await?;
+            let person = resolve_person(graph, output, &key).await?;
+            let (transitive, direct) = graph.get_group_memberships(&person.graph_key).await?;
             let mut rows = GroupMembership::from_lists(transitive, &direct);
             if let Some(kind) = kind {
                 rows.retain(|row| row.kind == kind);
             }
-            write_group_memberships(io::stdout(), output, &rows)
+            write_group_memberships(io::stdout(), &person.output, &rows)
         }
         UserCommand::Chain { key, depth } => {
-            let lookup = graph_key(&key, resolve_name(graph, &key).await?);
-            let chain = graph.get_chain(&lookup, depth).await?;
+            let person = resolve_person(graph, output, &key).await?;
+            let chain = graph.get_chain(&person.graph_key, depth).await?;
             if matches!(output.format, OutputFormat::Json | OutputFormat::Plain) {
-                write_users(io::stdout(), output, &chain)
+                write_users(io::stdout(), &person.output, &chain)
             } else {
                 for (depth, person) in chain.iter().enumerate() {
                     println!(
@@ -880,10 +883,11 @@ async fn run_user_get(
     mut get: UserGet,
     allow_sign_in_activity_fallback: bool,
 ) -> Result<()> {
-    let resolved = resolve_name(graph, &get.key).await?;
+    let person = resolve_person(graph, output, &get.key).await?;
+    let output = &person.output;
     let sign_in_activity_only = get.sign_in_activity && !get.all && get.groups.is_empty();
     if !(get.all || !get.groups.is_empty() || get.sign_in_activity) {
-        let user = match resolved {
+        let user = match person.user {
             Some(user) => user,
             None => graph.get_user(&get.key).await?,
         };
@@ -892,7 +896,7 @@ async fn run_user_get(
         }
         return write_user_detail(io::stdout(), &user);
     }
-    let lookup = graph_key(&get.key, resolved);
+    let lookup = person.graph_key;
     let mut properties = selected_properties(&get)?;
     let record = match graph.get_user_attributes(&lookup, &properties).await {
         Ok(record) => record,
@@ -918,28 +922,69 @@ async fn run_user_get(
     write_deep_record(output, &get.key, &record)
 }
 
-/// Resolves a key that can only be a person's name to that person, and says
-/// on standard error whom it matched, so a wrong match is visible even when
-/// standard output is JSON. Addresses and object ids return `None` and keep
-/// their existing lookup.
-async fn resolve_name(graph: &GraphClient, key: &str) -> Result<Option<User>> {
-    if !is_name_key(key) {
-        return Ok(None);
-    }
-    let user = graph.resolve_by_name(key).await?;
-    eprintln!(
-        "notice: {:?} matched {} <{}>",
-        sanitize(key),
-        sanitize(&user.display_name),
-        sanitize(&user.user_principal_name)
-    );
-    Ok(Some(user))
+/// The person a user command acts on.
+struct Person {
+    /// The key to send to Graph: the matched person's object id for a name,
+    /// otherwise the key the caller typed.
+    graph_key: String,
+    /// The matched record, when the key was a name.
+    user: Option<User>,
+    /// The caller's output options, with the name lookup recorded for the
+    /// JSON envelope.
+    output: OutputOptions,
 }
 
-/// The key to send to Graph: the resolved person's object id, or the key the
-/// caller typed when it was not a name.
-fn graph_key(key: &str, resolved: Option<User>) -> String {
-    resolved.map_or_else(|| key.to_owned(), |user| user.id)
+/// Resolves the key of a user command. Addresses and object ids pass through
+/// unchanged. A name must match exactly one person. In table output a match
+/// opens with a warning naming that person; JSON and plain output, which
+/// scripts read without looking at warnings, accept only an exact display
+/// name or surname, and record the lookup in the envelope.
+async fn resolve_person(graph: &GraphClient, output: &OutputOptions, key: &str) -> Result<Person> {
+    if !is_name_key(key) {
+        return Ok(Person {
+            graph_key: key.to_owned(),
+            user: None,
+            output: output.clone(),
+        });
+    }
+    let named = graph.resolve_by_name(key).await?;
+    if named.matched == NameMatch::Prefix && output.format != OutputFormat::Table {
+        return Err(EntraError::InexactName {
+            key: key.to_owned(),
+            candidate: person_label(&named.user),
+        });
+    }
+    announce_name_match(key, &named, output.format);
+    let mut output = output.clone();
+    output.lookup = Some(json!({
+        "key": key,
+        "matchedBy": match named.matched {
+            NameMatch::Exact => "exactName",
+            NameMatch::Prefix => "namePrefix",
+        },
+        "id": named.user.id,
+    }));
+    Ok(Person {
+        graph_key: named.user.id.clone(),
+        user: Some(named.user),
+        output,
+    })
+}
+
+/// Says whom a name matched: as a warning at the top of table output, where
+/// a person reads it, or on standard error beside JSON and plain output.
+fn announce_name_match(key: &str, named: &NamedUser, format: OutputFormat) {
+    let key = sanitize(key);
+    let person = person_label(&named.user);
+    match (format, named.matched) {
+        (OutputFormat::Table, NameMatch::Prefix) => println!(
+            "WARNING: {key:?} is not an exact name. Showing the only person whose display name or surname starts with it: {person}.\nWARNING: If you meant someone else, or someone who has left, pass a full address or object id.\n"
+        ),
+        (OutputFormat::Table, NameMatch::Exact) => println!(
+            "WARNING: {key:?} was looked up by name and matched {person}. Pass a full address or object id to be certain.\n"
+        ),
+        _ => eprintln!("notice: {key:?} matched {person} by exact name"),
+    }
 }
 
 /// Lists the directory. Every page is fetched before anything is written, so
@@ -1823,6 +1868,7 @@ mod tests {
             select: String::new(),
             results_only,
             wrap_untrusted: false,
+            lookup: None,
         }
     }
 
@@ -1938,6 +1984,7 @@ mod tests {
         .await;
         let output = OutputOptions {
             wrap_untrusted: true,
+            lookup: None,
             ..json_output(false)
         };
         let mut written = Vec::new();
@@ -2054,6 +2101,7 @@ mod tests {
             select: String::new(),
             results_only: false,
             wrap_untrusted: false,
+            lookup: None,
         };
         let mut output = Vec::new();
         write_sign_in_activity(
@@ -2088,6 +2136,7 @@ mod tests {
             select: String::new(),
             results_only: false,
             wrap_untrusted: false,
+            lookup: None,
         };
         let mut output = Vec::new();
         write_sign_in_activity(
@@ -2189,6 +2238,13 @@ mod tests {
     fn table_output() -> OutputOptions {
         OutputOptions {
             format: OutputFormat::Table,
+            ..json_output(false)
+        }
+    }
+
+    fn plain_output() -> OutputOptions {
+        OutputOptions {
+            format: OutputFormat::Plain,
             ..json_output(false)
         }
     }
@@ -2570,6 +2626,7 @@ mod tests {
         .await;
         let options = OutputOptions {
             wrap_untrusted: true,
+            lookup: None,
             ..json_output(true)
         };
         let mut written = Vec::new();
@@ -2596,7 +2653,7 @@ mod tests {
             .and(path("/v1.0/users"))
             .and(query_param("$top", "5"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
-                "value": [{"id": id, "displayName": "Alex Smith", "userPrincipalName": "alex@example.test"}]
+                "value": [{"id": id, "displayName": "Alex Smith", "surname": "Smith", "userPrincipalName": "alex@example.test"}]
             })))
             .expect(1)
             .mount(&server)
@@ -2631,7 +2688,7 @@ mod tests {
         wiremock::Mock::given(method("GET"))
             .and(path("/v1.0/users"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
-                "value": [{"id": "00000000-0000-4000-8000-000000000053", "displayName": "Alex Smith"}]
+                "value": [{"id": "00000000-0000-4000-8000-000000000053", "displayName": "Alex Smith", "surname": "Smith"}]
             })))
             .expect(1)
             .mount(&server)
@@ -2707,5 +2764,83 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    async fn one_prefix_match(server: &wiremock::MockServer, id: &str) {
+        use wiremock::matchers::{method, path};
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": id, "displayName": "Samantha Jones", "surname": "Jones"}]
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn json_output_refuses_a_name_that_only_starts_a_name() {
+        for output in [json_output(false), json_output(true), plain_output()] {
+            let server = licence_server().await;
+            one_prefix_match(&server, "00000000-0000-4000-8000-000000000061").await;
+            let error = resolve_person(&graph_for(&server), &output, "Sam")
+                .await
+                .err()
+                .expect("a prefix match must be refused outside table output");
+            assert_eq!(error.metadata().0, "InexactNameMatch");
+            assert!(error.to_string().contains("Samantha Jones"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn table_output_accepts_a_prefix_match_and_records_it() {
+        let server = licence_server().await;
+        let id = "00000000-0000-4000-8000-000000000062";
+        one_prefix_match(&server, id).await;
+        let person = resolve_person(&graph_for(&server), &table_output(), "Sam")
+            .await
+            .unwrap();
+        assert_eq!(person.graph_key, id);
+        assert_eq!(
+            person.output.lookup,
+            Some(json!({"key": "Sam", "matchedBy": "namePrefix", "id": id}))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exact_name_records_the_lookup_in_the_json_envelope() {
+        let server = licence_server().await;
+        let id = "00000000-0000-4000-8000-000000000063";
+        one_prefix_match(&server, id).await;
+        let person = resolve_person(&graph_for(&server), &json_output(false), "samantha jones")
+            .await
+            .unwrap();
+        let envelope = person.output.users_json_value(&[]).unwrap();
+        assert_eq!(
+            envelope["lookup"],
+            json!({"key": "samantha jones", "matchedBy": "exactName", "id": id})
+        );
+        assert_eq!(envelope["count"], 0);
+        let bare = OutputOptions {
+            results_only: true,
+            ..person.output
+        };
+        assert_eq!(bare.users_json_value(&[]).unwrap(), json!([]));
+    }
+
+    #[tokio::test]
+    async fn an_address_adds_no_lookup_to_the_envelope() {
+        let server = licence_server().await;
+        let person = resolve_person(&graph_for(&server), &json_output(false), "a@example.test")
+            .await
+            .unwrap();
+        assert_eq!(person.graph_key, "a@example.test");
+        assert!(person.output.lookup.is_none());
+        assert!(person
+            .output
+            .users_json_value(&[])
+            .unwrap()
+            .get("lookup")
+            .is_none());
     }
 }

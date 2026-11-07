@@ -18,6 +18,11 @@ pub enum EntraError {
         candidates: Vec<String>,
     },
 
+    #[error(
+        "{key:?} is not an exact display name or surname; the only person whose name starts with it is {candidate}. JSON and plain output accept only an exact name, so a near match cannot be mistaken for the person you meant. Pass that person's full address or object id, or their exact display name"
+    )]
+    InexactName { key: String, candidate: String },
+
     #[error("graph returned {status} {code}: {message}")]
     Graph {
         status: u16,
@@ -189,6 +194,7 @@ impl EntraError {
         match self {
             Self::UserNotFound { .. } => ("ResourceNotFound", 404),
             Self::AmbiguousUser { .. } => ("AmbiguousUser", 0),
+            Self::InexactName { .. } => ("InexactNameMatch", 0),
             Self::Graph { status, code, .. } => {
                 if code.eq_ignore_ascii_case("Request_ResourceNotFound") {
                     ("ResourceNotFound", *status)
@@ -279,6 +285,17 @@ mod tests {
             message.contains("A Smith <a@example.test>; B Smith"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn inexact_name_has_its_own_code_and_is_not_a_miss() {
+        let error = EntraError::InexactName {
+            key: "Sam".into(),
+            candidate: "Samantha Jones <sj@example.test>".into(),
+        };
+        assert!(!error.is_not_found());
+        assert!(!error.is_authorization_failure());
+        assert_eq!(error.metadata(), ("InexactNameMatch", 0));
     }
 
     #[test]

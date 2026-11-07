@@ -161,8 +161,9 @@ as `alex.smith@login.example.test` and receives mail at
 object ID, `entra` resolves an address-shaped key over `mail`,
 `userPrincipalName` and `proxyAddresses`, and uses the object ID internally.
 A bare name such as `entra user get Smith` also works when exactly one
-person's display name or surname starts with it; `entra` says on stderr whom it matched, and refuses with a list of
-candidates when several people do.
+person's display name or surname starts with it. Table output opens with a
+warning naming that person; `--json` and `--plain` accept only an exact name.
+Several matches are refused with a list of candidates.
 
 `entra user get` prints the full alias list and marks the primary. That is how
 to settle whether two addresses are one mailbox or two.

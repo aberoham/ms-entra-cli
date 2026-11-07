@@ -64,6 +64,14 @@ is `AmbiguousUser`. The message lists up to five of the matches. Run
 `entra user search <key>`, adding `-n` for more than 25 results, then pass the
 full address or object id of the person you mean.
 
+## `"..." is not an exact display name or surname`
+
+The JSON error code is `InexactNameMatch`. With `--json` or `--plain`, a name
+key must equal someone's display name or surname, and this key only starts
+the name of the person the message shows. Pass that person's full address or
+object id if they are the one you meant. Table output accepts the same match
+but opens with a warning.
+
 ## `no directory user matches "..."`
 
 The address does not resolve. Two common causes, in order of likelihood:
@@ -77,7 +85,8 @@ The address does not resolve. Two common causes, in order of likelihood:
 2. **The account no longer exists.** People who leave are removed from the
    directory, but can remain in other systems that were never updated. If you
    are comparing another system against the directory, treat this as a
-   finding.
+   finding. Compare by address or object id, not by name: a leaver's
+   name can match a current colleague whose name starts the same way.
 
 The message means `entra` tried the value as a sign-in name/object id and also
 searched primary mail and proxy addresses. For a key with no `@` that is not
