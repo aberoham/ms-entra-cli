@@ -82,6 +82,39 @@ fn auth_refresh_is_part_of_the_public_command_tree() {
 }
 
 #[test]
+fn user_help_states_the_direction_of_each_reporting_line_command() {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .args(["user", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"(?m)^\s+manager\s.*one level up").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\s+reports\s.*one level down only").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\s+chain\s.*upwards").unwrap())
+        .stdout(predicate::str::contains("user list --manager --json"))
+        .stdout(predicate::str::contains("Examples:"));
+}
+
+#[test]
+fn every_user_lookup_explains_the_keys_it_accepts() {
+    for subcommand in ["get", "manager", "reports", "chain", "groups"] {
+        let mut short = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        short
+            .args(["user", subcommand, "-h"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("<UPN|EMAIL|ID|NAME>"))
+            .stdout(predicate::str::contains("--wrap-untrusted").not());
+        let mut long = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        long.args(["user", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("exact display name or surname"))
+            .stdout(predicate::str::contains("--wrap-untrusted"));
+    }
+}
+
+#[test]
 fn login_without_an_app_registration_says_how_to_supply_one() {
     let temporary = tempfile::tempdir().unwrap();
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));

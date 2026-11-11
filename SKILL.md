@@ -94,8 +94,8 @@ entra whoami                          Your own record
 entra user get <upn|email|id|name>    Full record, including every alias
 entra user get <upn|email|id|name> --sign-in-activity
                                       Focused sign-in timestamps and ages
-entra user manager <upn|email|id|name> That person's manager
-entra user reports <upn|email|id|name> Everyone reporting to them
+entra user manager <upn|email|id|name> Their direct manager (one level up)
+entra user reports <upn|email|id|name> Their direct reports (one level down only)
 entra user chain <upn|email|id|name>  Management line upwards, indented
 entra user groups <upn|email|id|name> [--kind distribution|mail-security|m365|security|other]
                                       Groups they belong to, direct or nested
@@ -129,7 +129,9 @@ only. `--manager` gives each record a `manager` object (`id`, `displayName`,
 management lines can be analysed from one export instead of a lookup per
 person.
 
-`--json`, `--plain` and `--select field,field` control output. `--json`
+`--json`, `--plain` and `--select COLUMN,COLUMN` control output. `--select`
+picks table and `--plain` columns by header name, such as `NAME,EMAIL`; it has
+no effect on `--json`. `--json`
 applies to every command, including `auth status`, whose envelope adds
 `"account"` and `"expiresAt"` so you can check sign-in before a run. Set
 `--wrap-untrusted` when output feeds a language model: display names and job

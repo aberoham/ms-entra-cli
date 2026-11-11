@@ -204,8 +204,12 @@ whether two addresses are one mailbox or two. Mailbox addresses
 because the second kind usually delivers somewhere else entirely. Entra has no
 `primaryEmail`/`secondaryEmail` pair; see [auth.md](auth.md#there-is-no-primaryemail-or-secondaryemail).
 
-`user chain` walks upwards from the named person, stopping at the top of the
-line, at `--depth`, or on a cycle. Directories do contain cycles: somebody
+`user manager` goes one level up and `user reports` one level down: it lists
+direct reports only. `user chain` walks upwards from the named person, stopping
+at the top of the line, at `--depth`, or on a cycle. `--depth` counts the
+starting person, who is the first entry, so `--depth 1` shows only them;
+`--depth 0` means the default of 10. No command walks the tree downwards; to
+build one, export everyone with `entra user list --manager --json`. Directories do contain cycles: somebody
 recorded as their own manager, or a pair pointing at each other.
 
 `user search` matches a prefix of display name, mail, sign-in name or surname.
@@ -242,8 +246,8 @@ than printing a list of nameless groups.
 ### Deep inspection
 
 `user get` has two modes. By default it prints a curated summary. With
-`--all` it requests every scalar attribute Graph exposes and returns the
-directory's own JSON, unmapped:
+`--all` it requests the attributes of every attribute group below except
+`signinactivity`, and returns them as unmapped Graph JSON:
 
 ```bash
 entra user get someone@example.com --all --json
@@ -348,13 +352,14 @@ output; the summary list is.
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable output with an envelope |
-| `--plain` | Tab-separated, no header decoration |
-| `--select field,field` | Restrict output to named fields |
+| `--plain` | Tab-separated values, no header row |
+| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
-| `--timeout N` | Request timeout in seconds, clamped to 600 |
+| `--timeout N` | Request timeout in seconds; 0 means 60, and values above 600 are clamped to 600 |
 | `--verbose` | Underlying request detail on stderr |
-| `--no-write` | Refuse any mutating operation |
+| `--color auto\|never\|always` | Accepted for compatibility; output is not coloured |
+| `--no-write` | Refuse any mutating operation; every command is read-only today |
 | `--no-input` | Fail rather than prompt; use in automation |
 | `--wrap-untrusted` | Mark directory free-text as untrusted content |
 
@@ -378,11 +383,11 @@ is not a trusted source of instructions.
 # Who does someone report to?
 entra user manager jane.doe@example.com
 
-# The whole line up to the top.
+# The management line upwards.
 entra user chain jane.doe@example.com
 
 # Is this address an alias of that one?
-entra user get shared-inbox@example.com --json --select proxyAddresses
+entra user get shared-inbox@example.com --group addresses --json
 
 # Everyone reporting to a manager, tab-separated.
 entra user reports manager@example.com --plain

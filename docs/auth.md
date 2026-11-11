@@ -519,6 +519,7 @@ token the directory still accepts.
 | `ENTRA_RESULTS_ONLY` | `--results-only` |
 | `ENTRA_TIMEOUT` | `--timeout` |
 | `ENTRA_VERBOSE` | `--verbose` |
+| `ENTRA_COLOR` | `--color` |
 | `ENTRA_NO_WRITE` | `--no-write` |
 | `ENTRA_NO_INPUT` | `--no-input` |
 | `ENTRA_WRAP_UNTRUSTED` | `--wrap-untrusted` |

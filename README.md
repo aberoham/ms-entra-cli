@@ -5,8 +5,9 @@ manager, their direct reports, the management chain above them, the groups
 they belong to, and the extended attributes on their record.
 
 ```bash
-entra user manager jane.doe@example.com
-entra user chain jane.doe@example.com
+entra user manager jane.doe@example.com   # one level up
+entra user reports jane.doe@example.com   # direct reports, one level down
+entra user chain jane.doe@example.com     # the management line upwards
 entra user get shared-inbox@example.com   # every alias, primary marked
 entra user groups jane.doe@example.com --kind distribution
 entra user search "jane"

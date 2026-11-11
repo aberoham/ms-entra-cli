@@ -28,21 +28,89 @@ use crate::output::{
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
+/// Short help for the person argument of the single-person user commands.
+const PERSON_HELP: &str = "Sign-in name, email address or alias, object id, or name";
+
+/// Long help for the person argument, shared so every command explains
+/// address fallback and name matching the same way.
+const PERSON_LONG_HELP: &str = "\
+The person to look up: sign-in name (user principal name), primary email \
+address or any alias, object id, or name.
+
+An address matches a person's sign-in name, primary email address or any \
+of their aliases.
+
+Anything else that has no '@' and is not an object id is treated as a name. \
+It must match exactly one person whose display name or surname starts with \
+it; case is ignored. Table output opens with a WARNING line naming the person \
+matched. --json and --plain accept only an exact display name or surname \
+and print a notice on stderr. When --json prints the {results, count} \
+envelope, it also records the match there as \"lookup\". When several people \
+match, the command fails instead of choosing.";
+
+/// Long help for `--group`, which lists the valid attribute group names.
+const ATTRIBUTE_GROUP_LONG_HELP: &str = "\
+Attribute group to include. Repeat the option for several groups.
+
+Groups: identity, addresses, organisation, location, account, credentials, \
+onpremises, signinactivity. signinactivity needs AuditLog.Read.All, a \
+supported Entra role and a P1 or P2 licence.";
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "entra",
-    about = "Microsoft Entra ID directory lookups — manager hierarchy and extended staff details — from the command line"
+    about = "Read-only Microsoft Entra ID lookups: people, addresses, reporting lines, \
+groups, licences and Copilot usage reports",
+    long_about = "\
+Read-only Microsoft Entra ID lookups through Microsoft Graph.
+
+  People and addresses     entra user get, entra user search
+  Reporting lines          entra user manager (one level up)
+                           entra user reports (direct reports, one level down)
+                           entra user chain (the management line upwards)
+  Group memberships        entra user groups
+  Whole directory          entra user list
+  Tenant licences          entra licences
+  Copilot usage            entra reports
+
+Sign in first with 'entra auth login'. Nothing in this tool changes the \
+directory.",
+    after_help = "\
+Examples:
+  entra auth login --directory
+  entra user get jane.doe@example.com
+  entra user chain jane.doe@example.com
+  entra user reports jane.doe@example.com --json",
+    next_help_heading = "Global Options"
 )]
 pub struct Cli {
-    #[arg(long, global = true, env = "ENTRA_JSON", help = "Output as JSON")]
+    #[arg(
+        long,
+        global = true,
+        env = "ENTRA_JSON",
+        help = "Print JSON, as {\"results\": ..., \"count\": ...}"
+    )]
     json: bool,
-    #[arg(long, global = true, env = "ENTRA_PLAIN", help = "Output as plain TSV")]
+    #[arg(
+        long,
+        global = true,
+        env = "ENTRA_PLAIN",
+        help = "Print tab-separated values with no header row"
+    )]
     plain: bool,
     #[arg(
         long,
         global = true,
         env = "ENTRA_ACCOUNT",
-        help = "Authenticated account to use, by primary email, sign-in name or proxy address"
+        value_name = "EMAIL",
+        help = "Signed-in account to use, by primary email, sign-in name or alias",
+        long_help = "\
+Signed-in account to use, by primary email, sign-in name or alias. \
+'entra auth list' shows the accounts.
+
+Without it, user commands start with the default account and retry with each \
+other signed-in account when one is refused. licences and reports use the \
+default account only."
     )]
     account: Option<String>,
     #[arg(
@@ -50,7 +118,7 @@ pub struct Cli {
         short = 'v',
         global = true,
         env = "ENTRA_VERBOSE",
-        help = "Verbose output"
+        help = "Print each Graph request and sign-in step on stderr"
     )]
     verbose: bool,
     #[arg(
@@ -59,7 +127,8 @@ pub struct Cli {
         env = "ENTRA_COLOR",
         default_value = "auto",
         value_parser = ["auto", "never", "always"],
-        help = "Color mode: auto|never|always"
+        hide_short_help = true,
+        help = "Accepted for compatibility; output is not coloured"
     )]
     color: String,
     #[arg(
@@ -67,14 +136,23 @@ pub struct Cli {
         global = true,
         env = "ENTRA_SELECT",
         default_value = "",
-        help = "Comma-separated fields to output"
+        hide_default_value = true,
+        value_name = "COLUMNS",
+        help = "Show only these columns of a table or --plain list, such as NAME,EMAIL",
+        long_help = "\
+Show only these columns of a table or --plain list, in this order, by their \
+header names, such as NAME,EMAIL or \"NAME,SIGN-IN NAME\". Case is ignored.
+
+It has no effect on --json output, on the 'user chain' tree, or on the \
+'user get' record and its --all or --group views. It does apply to the \
+'user get --sign-in-activity' table."
     )]
     select: String,
     #[arg(
         long,
         global = true,
         env = "ENTRA_RESULTS_ONLY",
-        help = "Output only the result value (no envelope)"
+        help = "With --json, print the results without the {results, count} envelope"
     )]
     results_only: bool,
     #[arg(
@@ -82,28 +160,41 @@ pub struct Cli {
         global = true,
         env = "ENTRA_TIMEOUT",
         default_value_t = 60,
-        help = "Request timeout in seconds"
+        value_name = "SECONDS",
+        hide_short_help = true,
+        help = "Seconds to wait for each Graph request (0 means 60; at most 600)"
     )]
     timeout: u64,
     #[arg(
         long,
         global = true,
         env = "ENTRA_NO_WRITE",
-        help = "Refuse any mutating operation"
+        hide_short_help = true,
+        help = "Refuse any command that would change the directory (none does today)"
     )]
     no_write: bool,
     #[arg(
         long,
         global = true,
         env = "ENTRA_NO_INPUT",
-        help = "Fail instead of prompting (headless/agent safety)"
+        hide_short_help = true,
+        help = "Fail instead of prompting, for scripts and agents"
     )]
     no_input: bool,
     #[arg(
         long,
         global = true,
         env = "ENTRA_WRAP_UNTRUSTED",
-        help = "Wrap directory free-text in untrusted-content markers"
+        hide_short_help = true,
+        help = "With --json, mark directory free text with untrusted-content markers",
+        long_help = "\
+With --json, wrap free text from the directory, such as names and job titles, \
+in [UNTRUSTED:<id>]...[/UNTRUSTED:<id>] markers that identify it as untrusted \
+data, for example before the output reaches an AI agent.
+
+Not wrapped: 'user get --all' and '--group' records, the 'user get \
+--sign-in-activity' view, and 'user list' exports made with --all, --group, \
+--sign-in-activity or --manager."
     )]
     wrap_untrusted: bool,
     #[command(subcommand)]
@@ -112,20 +203,89 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
-    #[command(about = "Authentication commands")]
-    Auth(AuthArgs),
-    #[command(about = "Look up people in the directory")]
+    #[command(
+        about = "Look up people: record, addresses, manager, direct reports, management \
+chain and groups",
+        long_about = "\
+Look up people in the directory.
+
+  get        One person's record and email addresses
+  manager    Their direct manager (one level up)
+  reports    Their direct reports (one level down only)
+  chain      The management line upwards from them
+  groups     The groups they belong to
+  search     People whose name or address starts with some text
+  list       Everyone in the directory, or a JSON export
+
+There is no command that walks the whole tree downwards. Use 'entra user list \
+--manager --json' to export everyone with their manager and build the tree \
+from that.
+
+Without --account, a command refused for the default account is retried with \
+each other signed-in account.",
+        after_help = "\
+Examples:
+  entra user get jane.doe@example.com
+  entra user manager jane.doe@example.com
+  entra user chain jane.doe@example.com
+  entra user reports jane.doe@example.com"
+    )]
     User(UserArgs),
     #[command(
         about = "List the tenant's licences and who holds them",
+        long_about = "\
+List the licences the tenant subscribes to, and the people who hold one.
+
+These commands use one account: the default, or the one named by --account. \
+They do not retry with other accounts.",
+        after_help = "\
+Examples:
+  entra licences list
+  entra licences holders --sku SPE_E5
+  entra licences holders --sku SPE_E5 --by-company",
         visible_alias = "licenses"
     )]
     Licences(LicencesArgs),
-    #[command(about = "Read Microsoft 365 Copilot usage reports")]
+    #[command(
+        about = "Read Microsoft 365 Copilot usage reports",
+        long_about = "\
+Read Microsoft 365 Copilot usage reports, and the tenant setting that \
+decides whether reports show real names.
+
+The Copilot reports need Reports.Read.All, and 'settings' needs \
+ReportSettings.Read.All. All of them need an Entra role such as Reports Reader, AI Administrator or Global Reader. Sign \
+in with 'entra auth login --reports'. They use one account: the default, or \
+the one named by --account.",
+        after_help = "\
+Examples:
+  entra reports copilot-usage --period D28
+  entra reports copilot-usage --by-company
+  entra reports copilot-summary
+  entra reports settings"
+    )]
     Reports(ReportsArgs),
-    #[command(about = "Show the signed-in user's own profile")]
+    #[command(
+        about = "Show the profile of the account you are signed in as",
+        after_help = "\
+Examples:
+  entra whoami
+  entra whoami --account jane.doe@example.com"
+    )]
     Whoami,
-    #[command(about = "Show version information")]
+    #[command(
+        about = "Sign in, refresh, list and sign out accounts",
+        long_about = "\
+Sign in, refresh, list and sign out accounts. Tokens are kept in the \
+operating system's credential store.",
+        after_help = "\
+Examples:
+  entra auth login --client-id <application-client-id> --tenant-id <tenant-id>
+  entra auth login --directory
+  entra auth status
+  entra auth list"
+    )]
+    Auth(AuthArgs),
+    #[command(about = "Show the version, commit and build date")]
     Version,
 }
 
@@ -137,17 +297,58 @@ struct AuthArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 enum AuthCommand {
-    #[command(about = "Sign in to a Microsoft account")]
+    #[command(
+        about = "Sign in to a Microsoft account",
+        long_about = "\
+Sign in to a Microsoft account with a device code, or in the browser with \
+--browser.
+
+entra has no app registration of its own. The first sign-in needs \
+--client-id, or ENTRA_CLIENT_ID, and usually --tenant-id, or ENTRA_TENANT_ID. \
+Both are saved with the account, and later sign-ins reuse them.
+
+Without scope flags you get basic profile reads. Add --directory for \
+managers, reports, chains and full records.",
+        after_help = "\
+Examples:
+  entra auth login --client-id <application-client-id> --tenant-id <tenant-id>
+  entra auth login --directory
+  entra auth login --directory --groups --browser"
+    )]
     Login(AuthLogin),
     #[command(
-        about = "Silently redeem the stored refresh token; scope flags add to the scopes already held and never remove any"
+        about = "Silently redeem the stored refresh token; scope flags add to the scopes \
+already held and never remove any",
+        long_about = "\
+Silently redeem the stored refresh token for a new access token, without a \
+prompt. Scope flags add to the scopes already held and never remove any.
+
+To drop a scope, sign in again with 'entra auth login' and only the flags \
+you need.",
+        after_help = "\
+Examples:
+  entra auth refresh
+  entra auth refresh --groups"
     )]
     Refresh(AuthRefresh),
-    #[command(about = "Remove stored credentials")]
-    Logout { email: Option<String> },
-    #[command(about = "List authenticated accounts")]
+    #[command(
+        about = "Remove an account's stored credentials",
+        after_help = "\
+Examples:
+  entra auth logout
+  entra auth logout jane.doe@example.com"
+    )]
+    Logout {
+        #[arg(
+            value_name = "ACCOUNT",
+            help = "Account to sign out, by primary email, sign-in name or alias \
+(default: --account, else the default account)"
+        )]
+        email: Option<String>,
+    },
+    #[command(about = "List the signed-in accounts; * marks the default")]
     List,
-    #[command(about = "Show authentication status")]
+    #[command(about = "Show the selected account and check its token by reading its profile")]
     Status,
 }
 
@@ -156,39 +357,59 @@ struct AuthLogin {
     #[arg(
         long,
         env = "ENTRA_CLIENT_ID",
-        help = "Application (client) id of the app registration"
+        value_name = "ID",
+        help = "Application (client) id of the app registration; saved for later sign-ins"
     )]
     client_id: Option<String>,
-    #[arg(long, env = "ENTRA_TENANT_ID", help = "Directory (tenant) id")]
+    #[arg(
+        long,
+        env = "ENTRA_TENANT_ID",
+        value_name = "ID",
+        help = "Directory (tenant) id; saved for later sign-ins (default: the saved tenant, \
+else common)"
+    )]
     tenant_id: Option<String>,
     #[arg(
         long,
-        help = "Request User.Read.All and AuditLog.Read.All for full directory reads (needs administrator consent)"
+        help = "Request User.Read.All and AuditLog.Read.All for managers, reports, chains \
+and full records (needs administrator consent)"
     )]
     directory: bool,
     #[arg(
         long,
-        help = "Request User-LifeCycleInfo.Read.All so the employee leave date is populated (needs administrator consent and a supported role)"
+        help = "Request User-LifeCycleInfo.Read.All so the employee leave date is populated \
+(needs administrator consent and a supported role)"
     )]
     lifecycle: bool,
     #[arg(
         long,
-        help = "Request GroupMember.Read.All so 'user groups' can read group memberships (needs administrator consent)"
+        help = "Request GroupMember.Read.All so 'user groups' can read group memberships \
+(needs administrator consent)"
     )]
     groups: bool,
     #[arg(
         long,
-        help = "Request LicenseAssignment.Read.All so 'licences' can read the tenant's licences (needs administrator consent)"
+        help = "Request LicenseAssignment.Read.All so 'licences' can read the tenant's \
+licences (needs administrator consent and a supported role)"
     )]
     licences: bool,
     #[arg(
         long,
-        help = "Request Reports.Read.All and ReportSettings.Read.All so 'reports' can read usage reports (needs administrator consent)"
+        help = "Request Reports.Read.All and ReportSettings.Read.All so 'reports' can read \
+usage reports (needs administrator consent and a supported role)"
     )]
     reports: bool,
-    #[arg(long, help = "Sign in via the system browser instead of device code")]
+    #[arg(
+        long,
+        help = "Sign in through the system browser instead of a device code"
+    )]
     browser: bool,
-    #[arg(long, action = clap::ArgAction::Append, help = "Additional OAuth scope to request (repeatable)")]
+    #[arg(
+        long,
+        value_name = "SCOPE",
+        action = clap::ArgAction::Append,
+        help = "Additional OAuth scope to request (repeatable)"
+    )]
     scope: Vec<String>,
 }
 
@@ -196,31 +417,32 @@ struct AuthLogin {
 struct AuthRefresh {
     #[arg(
         long,
-        help = "Request User.Read.All and AuditLog.Read.All while refreshing (needs administrator consent)"
+        help = "Add User.Read.All and AuditLog.Read.All (needs administrator consent)"
     )]
     directory: bool,
     #[arg(
         long,
-        help = "Request User-LifeCycleInfo.Read.All while refreshing (needs administrator consent)"
+        help = "Add User-LifeCycleInfo.Read.All (needs administrator consent and a \
+supported role)"
     )]
     lifecycle: bool,
-    #[arg(
-        long,
-        help = "Request GroupMember.Read.All while refreshing (needs administrator consent)"
-    )]
+    #[arg(long, help = "Add GroupMember.Read.All (needs administrator consent)")]
     groups: bool,
     #[arg(
         long,
-        help = "Request LicenseAssignment.Read.All while refreshing (needs administrator consent)"
+        help = "Add LicenseAssignment.Read.All (needs administrator consent and a \
+supported role)"
     )]
     licences: bool,
     #[arg(
         long,
-        help = "Request Reports.Read.All and ReportSettings.Read.All while refreshing (needs administrator consent)"
+        help = "Add Reports.Read.All and ReportSettings.Read.All (needs administrator \
+consent and a supported role)"
     )]
     reports: bool,
     #[arg(
         long,
+        value_name = "SCOPE",
         action = clap::ArgAction::Append,
         help = "Additional OAuth scope to request (repeatable)"
     )]
@@ -235,31 +457,144 @@ struct UserArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 enum UserCommand {
-    #[command(about = "Show one person's full directory record")]
+    #[command(
+        about = "Show one person's directory record and email addresses",
+        long_about = "\
+Show one person's directory record: name, addresses, job, department, \
+company, office and account state. Every email alias is listed, with the \
+primary address marked.
+
+--all and --group show the unmapped Graph attributes of the chosen attribute \
+groups instead; --all means every group except signinactivity. With --json or \
+--plain that record is printed as JSON without the {results, count} \
+envelope.",
+        after_help = "\
+Examples:
+  entra user get jane.doe@example.com
+  entra user get \"Jane Doe\"
+  entra user get jane.doe@example.com --group addresses --json
+  entra user get jane.doe@example.com --sign-in-activity"
+    )]
     Get(UserGet),
-    #[command(about = "Show a person's manager")]
-    Manager { key: String },
-    #[command(about = "Show everyone reporting to a person")]
-    Reports { key: String },
-    #[command(about = "Show the groups a person belongs to, directly or through another group")]
+    #[command(
+        about = "Show a person's direct manager (one level up)",
+        long_about = "\
+Show a person's direct manager, one level up. For the whole line up to the \
+top, use 'entra user chain'.
+
+When no manager is recorded, table and --plain output say so in a sentence, \
+and --json returns an empty list.",
+        after_help = "\
+Examples:
+  entra user manager jane.doe@example.com
+  entra user manager jane.doe@example.com --json"
+    )]
+    Manager {
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        key: String,
+    },
+    #[command(
+        about = "Show a person's direct reports (one level down only)",
+        long_about = "\
+Show the people whose manager is this person: direct reports only, one level \
+down.
+
+To go further down, run it again for each report, or export everyone with \
+'entra user list --manager --json' and build the tree from that. For the \
+line upwards, use 'entra user chain'.",
+        after_help = "\
+Examples:
+  entra user reports jane.doe@example.com
+  entra user reports jane.doe@example.com --plain --select NAME,EMAIL"
+    )]
+    Reports {
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        key: String,
+    },
+    #[command(
+        about = "Show the management line upwards from a person",
+        long_about = "\
+Show the management line upwards: the person, their manager, that person's \
+manager, and so on, until someone has no manager or --depth people are \
+shown. It does not go downwards; use 'entra user reports' for that.
+
+Table output is an indented list of names and job titles. --json and --plain \
+give one person per row, starting with the person you asked about.",
+        after_help = "\
+Examples:
+  entra user chain jane.doe@example.com
+  entra user chain jane.doe@example.com --depth 3
+  entra user chain jane.doe@example.com --json"
+    )]
+    Chain {
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        key: String,
+        #[arg(
+            long,
+            default_value_t = 10,
+            value_name = "N",
+            help = "Most people to show, counting the person you asked about (0 means 10)"
+        )]
+        depth: usize,
+    },
+    #[command(
+        about = "Show the groups a person belongs to, directly or through another group",
+        long_about = "\
+Show the groups a person belongs to. Each row shows the group's kind, whether \
+it is managed on premises or in the cloud, and whether the membership is \
+direct or nested through another group.
+
+Needs User.Read.All and GroupMember.Read.All: sign in with 'entra auth login \
+--directory --groups'.",
+        after_help = "\
+Examples:
+  entra user groups jane.doe@example.com
+  entra user groups jane.doe@example.com --kind distribution"
+    )]
     Groups {
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
         #[arg(long, value_enum, help = "Show only groups of this kind")]
         kind: Option<GroupKind>,
     },
-    #[command(about = "Walk the management line upwards from a person")]
-    Chain {
-        key: String,
-        #[arg(long, default_value_t = 10, help = "Maximum number of people to walk")]
-        depth: usize,
-    },
-    #[command(about = "Find people by name or address")]
+    #[command(
+        about = "Find people whose name or address starts with some text",
+        long_about = "\
+Find people whose display name, surname, primary email address or sign-in \
+name starts with the text given. Case is ignored. Unlike the other user \
+commands, several matches are listed, not refused.",
+        after_help = "\
+Examples:
+  entra user search jane
+  entra user search \"Doe\" -n 50"
+    )]
     Search {
+        #[arg(value_name = "TEXT", help = "Start of a name or address")]
         query: String,
-        #[arg(short = 'n', long, default_value_t = 25, help = "Maximum results")]
+        #[arg(
+            short = 'n',
+            long,
+            default_value_t = 25,
+            value_name = "N",
+            help = "Most results to show"
+        )]
         top: usize,
     },
-    #[command(about = "List every user in the directory")]
+    #[command(
+        about = "List everyone in the directory, or export them as JSON",
+        long_about = "\
+List everyone in the directory as a table of name, email, sign-in name, job \
+title and department.
+
+--all, --group, --sign-in-activity and --manager produce a JSON export \
+instead and need --json. --manager adds each person's manager, which is the \
+way to build a full reporting tree.",
+        after_help = "\
+Examples:
+  entra user list
+  entra user list --manager --json
+  entra user list --group organisation --manager --json"
+    )]
     List(UserList),
 }
 
@@ -272,10 +607,28 @@ struct LicencesArgs {
 #[derive(Debug, Clone, Subcommand)]
 enum LicencesCommand {
     #[command(
-        about = "List the licences the tenant subscribes to, with assigned and enabled counts"
+        about = "List the licences the tenant subscribes to, with assigned and enabled counts",
+        long_about = "\
+List the licences the tenant subscribes to, with their names, SKU ids, and \
+assigned and enabled counts.
+
+Needs LicenseAssignment.Read.All (sign in with 'entra auth login --licences') \
+and a role such as Directory Readers or Global Reader."
     )]
     List,
-    #[command(about = "List the people who hold a licence, or count them by company")]
+    #[command(
+        about = "List the people who hold a licence, or count them by company",
+        long_about = "\
+List the people who hold a licence, or count them by company with \
+--by-company.
+
+Needs User.Read.All. A licence name in --sku also needs what 'entra licences \
+list' needs, because the name is looked up there; a SKU id does not.",
+        after_help = "\
+Examples:
+  entra licences holders --sku SPE_E5
+  entra licences holders --sku SPE_E5 --by-company --json"
+    )]
     Holders(LicenceHolders),
 }
 
@@ -283,6 +636,7 @@ enum LicencesCommand {
 struct LicenceHolders {
     #[arg(
         long,
+        value_name = "NAME|ID",
         help = "Licence name, such as SPE_E5, or its SKU id; 'entra licences list' shows both"
     )]
     sku: String,
@@ -298,7 +652,18 @@ struct ReportsArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 enum ReportsCommand {
-    #[command(about = "Per-person Microsoft 365 Copilot activity, or totals per company")]
+    #[command(
+        about = "Per-person Microsoft 365 Copilot activity, or totals per company",
+        long_about = "\
+Show each person's Microsoft 365 Copilot activity over the period, or totals \
+of users, active users and prompts per company with --by-company.
+
+Also needs User.Read.All, to match people to their company.",
+        after_help = "\
+Examples:
+  entra reports copilot-usage
+  entra reports copilot-usage --period D90 --by-company"
+    )]
     CopilotUsage(CopilotUsageArgs),
     #[command(about = "Active and enabled Copilot users per app")]
     CopilotSummary(CopilotPeriod),
@@ -310,7 +675,13 @@ enum ReportsCommand {
 
 #[derive(Debug, Clone, Args)]
 struct CopilotPeriod {
-    #[arg(long, value_enum, ignore_case = true, default_value_t = ReportPeriod::D28, help = "Days covered by the report")]
+    #[arg(
+        long,
+        value_enum,
+        ignore_case = true,
+        default_value_t = ReportPeriod::D28,
+        help = "Days covered by the report"
+    )]
     period: ReportPeriod,
 }
 
@@ -358,23 +729,27 @@ impl ReportPeriod {
 struct UserList {
     #[arg(
         long,
-        help = "Include every directory attribute, not the summary set (JSON only)"
+        help = "Include every attribute group except signinactivity (JSON only)"
     )]
     all: bool,
     #[arg(
         long = "group",
+        value_name = "GROUP",
         action = clap::ArgAction::Append,
-        help = "Include only these attribute groups (repeatable; JSON only)"
+        help = "Include only this attribute group (repeatable; JSON only; --help lists them)",
+        long_help = ATTRIBUTE_GROUP_LONG_HELP
     )]
     groups: Vec<String>,
     #[arg(
         long,
-        help = "Include sign-in activity (JSON only; needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
+        help = "Include sign-in activity (JSON only; needs AuditLog.Read.All, a supported \
+Entra role, and P1/P2)"
     )]
     sign_in_activity: bool,
     #[arg(
         long,
-        help = "Include each person's manager: id, name, sign-in name and enabled state (JSON only)"
+        help = "Include each person's manager: id, name, sign-in name and enabled state \
+(JSON only)"
     )]
     manager: bool,
 }
@@ -387,19 +762,25 @@ impl UserList {
 
 #[derive(Debug, Clone, Args)]
 struct UserGet {
-    #[arg(help = "Sign-in name, email address, object id or name")]
+    #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
     key: String,
-    #[arg(long, help = "Retrieve every directory attribute, not the summary set")]
+    #[arg(
+        long,
+        help = "Show every attribute group except signinactivity, not the summary record"
+    )]
     all: bool,
     #[arg(
         long = "group",
+        value_name = "GROUP",
         action = clap::ArgAction::Append,
-        help = "Retrieve only these attribute groups (repeatable); implies --all behaviour"
+        help = "Show only this attribute group (repeatable; --help lists them)",
+        long_help = ATTRIBUTE_GROUP_LONG_HELP
     )]
     groups: Vec<String>,
     #[arg(
         long,
-        help = "Show sign-in timestamps and ages; with --all/--group, include activity in that record (needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
+        help = "Show sign-in times and ages; with --all or --group, add them to that record \
+(needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
     )]
     sign_in_activity: bool,
 }
