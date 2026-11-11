@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Report arguments that fail to parse as a JSON error on standard output when `--json` or `ENTRA_JSON` is set, as other argument errors already were.
+- Refuse an empty `--group` name before signing in, instead of reading no attributes.
 - Refuse a `--select` column name that the table or `--plain` output does not have, listing the columns it does have. It used to print empty rows and succeed.
 - Refuse an address that two directory objects share, such as a guest whose mail matches a member's alias, with the error code `AmbiguousUser`, instead of using whichever Graph listed first.
 - Report a browser sign-in that Entra refused, such as a cancelled consent, in Entra's words instead of as a state mismatch.

@@ -89,9 +89,6 @@ pub fn group_properties(names: &[String]) -> Result<Vec<&'static str>> {
     let mut unknown = Vec::new();
     for raw in names {
         let name = raw.trim().to_ascii_lowercase();
-        if name.is_empty() {
-            continue;
-        }
         let found = ATTRIBUTE_GROUPS
             .iter()
             .chain(std::iter::once(&SIGN_IN_ACTIVITY_GROUP))
@@ -118,6 +115,21 @@ pub fn group_properties(names: &[String]) -> Result<Vec<&'static str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_group_name_is_refused() {
+        for names in [
+            vec![String::new()],
+            vec!["  ".to_owned()],
+            vec!["identity".to_owned(), String::new()],
+        ] {
+            let error = group_properties(&names).unwrap_err().to_string();
+            assert!(
+                error.contains("unknown attribute group"),
+                "{names:?}: {error}"
+            );
+        }
+    }
 
     #[test]
     fn all_properties_excludes_navigation_properties() {

@@ -138,7 +138,7 @@ pub struct AccountInfo {
     pub login_time: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct TokenData {
     #[serde(default)]
     pub access_token: String,
@@ -150,6 +150,18 @@ pub struct TokenData {
     pub email: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scope: String,
+}
+
+/// Leaves both tokens out, so a debug print can never leak them.
+impl std::fmt::Debug for TokenData {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TokenData")
+            .field("expires_at", &self.expires_at)
+            .field("email", &self.email)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TokenData {
@@ -954,6 +966,23 @@ mod tests {
     use crate::secrets::test_support::MemoryStore;
 
     use super::*;
+
+    #[test]
+    fn debug_output_never_shows_a_token() {
+        let token = TokenData {
+            access_token: "access-secret".into(),
+            refresh_token: "refresh-secret".into(),
+            email: "a@example.test".into(),
+            ..TokenData::default()
+        };
+        let graph =
+            crate::graph::GraphClient::new("bearer-secret", Duration::from_secs(1), false).unwrap();
+        let shown = format!("{token:?} {graph:?}");
+        for secret in ["access-secret", "refresh-secret", "bearer-secret"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(shown.contains("a@example.test"), "{shown}");
+    }
 
     fn callback(pairs: &[(&str, &str)]) -> Result<String> {
         let query = pairs

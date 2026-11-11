@@ -132,12 +132,23 @@ fn membership_error(error: EntraError, key: &str) -> EntraError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GraphClient {
     http: reqwest::Client,
     access_token: String,
     base_url: Url,
     verbose: bool,
+}
+
+/// Leaves the bearer token out, so a debug print can never leak it.
+impl std::fmt::Debug for GraphClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GraphClient")
+            .field("base_url", &self.base_url.as_str())
+            .field("verbose", &self.verbose)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GraphClient {
@@ -390,6 +401,11 @@ impl GraphClient {
             let Some(manager) = self.get_manager(current_id).await? else {
                 break;
             };
+            if manager.id.is_empty() {
+                return Err(EntraError::message(
+                    "Graph returned a manager without an object id, so the chain cannot continue",
+                ));
+            }
             if !seen.insert(manager.id.clone()) {
                 break;
             }
@@ -775,6 +791,13 @@ impl GraphClient {
     }
 
     fn user_url(&self, key: &str) -> Result<Url> {
+        // A URL path treats these as navigation, not as a segment, so they
+        // would address the collection or its parent instead of a person.
+        if matches!(key.trim(), "" | "." | "..") {
+            return Err(EntraError::UserNotFound {
+                key: key.to_owned(),
+            });
+        }
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .map_err(|_| EntraError::message("Graph base URL cannot hold path segments"))?
@@ -941,6 +964,38 @@ mod tests {
         GraphClient::new("test-token", Duration::from_secs(2), false)
             .unwrap()
             .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+    }
+
+    #[tokio::test]
+    async fn dot_and_empty_keys_never_reach_a_url() {
+        let server = MockServer::start().await;
+        let graph = client(&server).await;
+        for key in ["", " ", ".", ".."] {
+            let error = graph.get_direct_reports(key).await.unwrap_err();
+            assert!(error.is_not_found(), "{key:?}: {error}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_chain_stops_at_a_manager_without_an_object_id() {
+        let server = MockServer::start().await;
+        let start = "00000000-0000-4000-8000-000000000061";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{start}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(person(start, "Al")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{start}/manager")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"displayName": "No Id"})))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_chain(start, 5).await.unwrap_err();
+        assert!(
+            error.to_string().contains("without an object id"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

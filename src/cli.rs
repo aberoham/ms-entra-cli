@@ -896,8 +896,19 @@ pub async fn execute() -> i32 {
                 error.kind(),
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
             );
-            let _ = error.print();
-            return if informational { 0 } else { 1 };
+            if informational {
+                let _ = error.print();
+                return 0;
+            }
+            // Arguments that fail to parse are still argument errors, so a
+            // caller who asked for JSON gets the JSON error shape.
+            if json_requested(std::env::args_os(), std::env::var_os("ENTRA_JSON")) {
+                let message = error.render().to_string();
+                write_command_error(true, &EntraError::message(message.trim()));
+            } else {
+                let _ = error.print();
+            }
+            return 1;
         }
     };
     let json_mode = cli.json;
@@ -2202,11 +2213,11 @@ fn list_properties(list: &UserList) -> Result<Vec<&'static str>> {
     Ok(properties)
 }
 
+/// A refusal the sign-in-activity read can recover from by dropping that
+/// property: a missing permission or an unsupported role, judged by type and
+/// never by Graph's wording.
 fn is_sign_in_activity_refusal(error: &EntraError) -> bool {
-    error.is_sign_in_activity_role_refusal() || {
-        let lower = error.to_string().to_ascii_lowercase();
-        lower.contains("signinactivity") || lower.contains("auditlog") || error.is_permission()
-    }
+    error.is_authorization_failure()
 }
 
 const SIGN_IN_TIMESTAMPS: [(&str, &str, &str); 3] = [
@@ -2370,6 +2381,28 @@ fn human_age(seconds: i64) -> String {
     } else {
         format!("in {duration}")
     }
+}
+
+/// Whether JSON output was asked for, read without clap because clap has
+/// just refused the arguments. `--json` counts only before a `--` that ends
+/// the options; `ENTRA_JSON` follows clap's reading of a boolean flag.
+fn json_requested(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    env: Option<std::ffi::OsString>,
+) -> bool {
+    let flag = args
+        .into_iter()
+        .skip(1)
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json");
+    let from_env = env.is_some_and(|value| {
+        let value = value.to_string_lossy().trim().to_ascii_lowercase();
+        !matches!(
+            value.as_str(),
+            "" | "0" | "false" | "no" | "off" | "n" | "f"
+        )
+    });
+    flag || from_env
 }
 
 fn write_command_error(json_mode: bool, error: &EntraError) {
@@ -2750,6 +2783,26 @@ mod tests {
                 .tenant_id,
             DEFAULT_TENANT_ID
         );
+    }
+
+    #[test]
+    fn json_is_requested_by_the_flag_before_any_terminator_or_by_the_environment() {
+        let args = |list: &[&str]| -> Vec<std::ffi::OsString> {
+            list.iter().map(std::ffi::OsString::from).collect()
+        };
+        assert!(json_requested(args(&["entra", "user", "--json"]), None));
+        assert!(!json_requested(
+            args(&["entra", "user", "--", "--json"]),
+            None
+        ));
+        assert!(!json_requested(args(&["--json"]), None), "program name");
+        assert!(json_requested(args(&["entra"]), Some("1".into())));
+        for falsey in ["", "0", "false", "No", "off"] {
+            assert!(
+                !json_requested(args(&["entra"]), Some(falsey.into())),
+                "{falsey}"
+            );
+        }
     }
 
     #[test]

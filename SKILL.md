@@ -114,8 +114,10 @@ entra licences holders --sku <name|sku-id> [--by-company]
                                       Who holds a licence, or holders per company
 entra reports copilot-usage [--period D7|D28|D90|D180] [--by-company]
                                       Copilot activity per person, or per company
-entra reports copilot-summary         Active and enabled Copilot users per app
-entra reports copilot-trend           Daily active Copilot users and prompts
+entra reports copilot-summary [--period D7|D28|D90|D180]
+                                      Active and enabled Copilot users per app
+entra reports copilot-trend [--period D7|D28|D90|D180]
+                                      Daily active Copilot users and prompts
 entra reports settings                Whether usage reports conceal names
 entra auth login|refresh|logout|list|status
 ```

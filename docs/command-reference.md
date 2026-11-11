@@ -34,7 +34,7 @@ See [auth.md](auth.md) for which fields fall on each side of that line.
 ```text
 entra auth login [--client-id ID] [--browser] [--directory] [--lifecycle] [--groups] [--licences] [--reports] [--tenant-id ID] [--scope SCOPE]...
 entra auth refresh [--directory] [--lifecycle] [--groups] [--licences] [--reports] [--scope SCOPE]...
-entra auth logout [EMAIL]
+entra auth logout [ACCOUNT]
 entra auth list
 entra auth status
 ```

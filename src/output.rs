@@ -79,7 +79,7 @@ impl OutputOptions {
         wrap: impl Fn(&T, &str) -> T,
     ) -> Result<Value> {
         let (rows, notice) = if self.wrap_untrusted {
-            let id = untrusted_id();
+            let id = untrusted_id()?;
             (
                 rows.iter().map(|row| wrap(row, &id)).collect::<Vec<_>>(),
                 Some(untrusted_notice(&id)),
@@ -113,7 +113,7 @@ impl OutputOptions {
         wrap: impl Fn(&T, &str) -> T,
     ) -> Result<Value> {
         let (record, notice) = if self.wrap_untrusted {
-            let id = untrusted_id();
+            let id = untrusted_id()?;
             (wrap(record, &id), Some(untrusted_notice(&id)))
         } else {
             (record.clone(), None)
@@ -634,10 +634,16 @@ pub fn sanitize_multiline(value: &str) -> String {
         .collect()
 }
 
-fn untrusted_id() -> String {
+/// A fresh marker id. A fixed fallback would be a marker that directory text
+/// could forge, so a failure of the system's random source is an error.
+fn untrusted_id() -> Result<String> {
     let mut bytes = [0_u8; 4];
-    let _ = getrandom::fill(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|error| {
+        EntraError::message(format!(
+            "could not draw a random --wrap-untrusted marker: {error}"
+        ))
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn untrusted_notice(id: &str) -> String {
