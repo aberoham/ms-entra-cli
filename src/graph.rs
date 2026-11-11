@@ -867,7 +867,7 @@ impl GraphClient {
                     if attempt < MAX_ATTEMPTS
                         && (error.is_timeout() || error.is_body() || error.is_decode()) =>
                 {
-                    sleep(Duration::from_millis(250 << (attempt - 1))).await;
+                    sleep(retry_delay(retry_after, attempt)).await;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -877,15 +877,21 @@ impl GraphClient {
             }
             let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if retryable && attempt < MAX_ATTEMPTS {
-                let delay =
-                    retry_after.unwrap_or_else(|| Duration::from_millis(250 << (attempt - 1)));
-                sleep(delay.min(Duration::from_secs(30))).await;
+                sleep(retry_delay(retry_after, attempt)).await;
                 continue;
             }
             return Err(EntraError::from_graph(status.as_u16(), &body));
         }
         Err(EntraError::message("Graph request exhausted its retries"))
     }
+}
+
+/// How long to wait before another attempt: Graph's numeric `Retry-After`
+/// when it sent one, otherwise an exponential backoff, never above 30 seconds.
+fn retry_delay(retry_after: Option<Duration>, attempt: usize) -> Duration {
+    retry_after
+        .unwrap_or_else(|| Duration::from_millis(250 << (attempt - 1)))
+        .min(Duration::from_secs(30))
 }
 
 /// Reads a response body, refusing one larger than `MAX_RESPONSE_BYTES`.
@@ -1000,21 +1006,29 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_body_cut_off_part_way_is_retried() {
+    /// Serves two responses on a raw socket: the first cut off half way
+    /// through its body with the given status line and extra headers, the
+    /// second complete. Returns the client's base address.
+    async fn cut_off_then_complete(
+        first_status: &'static str,
+        first_headers: &'static str,
+        body: String,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let body =
-            json!({"id": "00000000-0000-4000-8000-000000000051", "displayName": "Al"}).to_string();
         let server = tokio::spawn(async move {
             for complete in [false, true] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = vec![0_u8; 4096];
                 let _ = stream.read(&mut request).await.unwrap();
-                let sent = if complete { body.len() } else { body.len() / 2 };
+                let (status, headers, sent) = if complete {
+                    ("200 OK", "", body.len())
+                } else {
+                    (first_status, first_headers, body.len() / 2)
+                };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{headers}\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     &body[..sent]
@@ -1022,14 +1036,45 @@ mod tests {
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let graph = GraphClient::new("test-token", Duration::from_secs(2), false)
+        (address, server)
+    }
+
+    fn raw_client(address: std::net::SocketAddr) -> GraphClient {
+        GraphClient::new("test-token", Duration::from_secs(5), false)
             .unwrap()
-            .with_base_url(Url::parse(&format!("http://{address}/v1.0/")).unwrap());
-        let user = graph
+            .with_base_url(Url::parse(&format!("http://{address}/v1.0/")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_body_cut_off_part_way_is_retried() {
+        let body =
+            json!({"id": "00000000-0000-4000-8000-000000000051", "displayName": "Al"}).to_string();
+        let (address, server) = cut_off_then_complete("200 OK", "", body).await;
+        let user = raw_client(address)
             .get_user("00000000-0000-4000-8000-000000000051")
             .await
             .unwrap();
         assert_eq!(user.display_name, "Al");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_throttling_response_still_waits_for_retry_after() {
+        let body =
+            json!({"id": "00000000-0000-4000-8000-000000000052", "displayName": "Bo"}).to_string();
+        let (address, server) =
+            cut_off_then_complete("429 Too Many Requests", "Retry-After: 1\r\n", body).await;
+        let started = std::time::Instant::now();
+        let user = raw_client(address)
+            .get_user("00000000-0000-4000-8000-000000000052")
+            .await
+            .unwrap();
+        assert_eq!(user.display_name, "Bo");
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
         server.await.unwrap();
     }
 

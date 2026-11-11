@@ -1315,23 +1315,13 @@ async fn run_login(
         auth.login_device_code(&scopes, cli.verbose).await
     }
     .map_err(|error| error.context("login failed"))?;
-    let mut config = Config::load().map_err(|error| error.context("loading config"))?;
-    config.clients.insert(
-        info.email.clone(),
+    record_login(
+        &info,
         ClientConfig {
             client_id,
             tenant_id,
         },
-    );
-    // A default left behind by an account that was signed out names nobody,
-    // so the account just signed in replaces it.
-    let accounts = crate::auth::list_accounts()?;
-    if !is_stored_account(&config.default_account, &accounts) {
-        config.default_account = info.email.clone();
-    }
-    config
-        .save()
-        .map_err(|error| error.context("saving config"))?;
+    )?;
     let note = "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent.";
     if output.format == OutputFormat::Json {
         if !login.directory {
@@ -1348,6 +1338,21 @@ async fn run_login(
         println!("{note}");
     }
     Ok(())
+}
+
+/// Saves a completed sign-in's app registration, and makes the account the
+/// default when there is none. A default left behind by an account that was
+/// signed out names nobody, so the account just signed in replaces it.
+fn record_login(info: &AccountInfo, client: ClientConfig) -> Result<()> {
+    let mut config = Config::load().map_err(|error| error.context("loading config"))?;
+    config.clients.insert(info.email.clone(), client);
+    let accounts = crate::auth::list_accounts()?;
+    if !is_stored_account(&config.default_account, &accounts) {
+        config.default_account = info.email.clone();
+    }
+    config
+        .save()
+        .map_err(|error| error.context("saving config"))
 }
 
 /// What `auth login --json` reports. The display name comes from the
@@ -2620,6 +2625,111 @@ mod tests {
             client_id: "00000000-0000-4000-8000-000000000002".into(),
             login_time: "2026-08-31T00:00:00Z".into(),
         }
+    }
+
+    /// Points the config directory at a fresh temporary one for one test.
+    /// Tests that do this hold the lock, since the variable is process-wide.
+    struct ConfigDir {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        directory: tempfile::TempDir,
+    }
+
+    impl ConfigDir {
+        fn new(accounts: &[&str], default_account: &str) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let guard = LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let directory = tempfile::tempdir().unwrap();
+            std::env::set_var("ENTRA_CONFIG_DIR", directory.path());
+            std::fs::create_dir_all(directory.path().join("accounts")).unwrap();
+            for email in accounts {
+                std::fs::write(
+                    directory
+                        .path()
+                        .join("accounts")
+                        .join(format!("{email}.json")),
+                    serde_json::to_vec(&account(email)).unwrap(),
+                )
+                .unwrap();
+            }
+            Config {
+                default_account: default_account.into(),
+                ..Config::default()
+            }
+            .save()
+            .unwrap();
+            Self {
+                _guard: guard,
+                directory,
+            }
+        }
+
+        fn default_account(&self) -> String {
+            Config::load_from(&self.directory.path().join("config.json"))
+                .unwrap()
+                .default_account
+        }
+    }
+
+    impl Drop for ConfigDir {
+        fn drop(&mut self) {
+            std::env::remove_var("ENTRA_CONFIG_DIR");
+        }
+    }
+
+    async fn sign_out(email: &str) {
+        let cli = Cli::try_parse_from(["entra", "auth", "logout", email]).unwrap();
+        let store: Arc<dyn CredentialStore> =
+            Arc::new(crate::secrets::test_support::MemoryStore::default());
+        run_auth(
+            &cli,
+            &json_output(false),
+            store,
+            AuthCommand::Logout {
+                email: Some(email.into()),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn signing_out_the_default_account_saves_a_remaining_one_as_default() {
+        let config = ConfigDir::new(
+            &["amy@example.test", "bob@example.test"],
+            "bob@example.test",
+        );
+        sign_out("bob@example.test").await;
+        assert_eq!(config.default_account(), "amy@example.test");
+    }
+
+    #[tokio::test]
+    async fn signing_out_another_account_keeps_the_default() {
+        let config = ConfigDir::new(
+            &["amy@example.test", "bob@example.test"],
+            "bob@example.test",
+        );
+        sign_out("amy@example.test").await;
+        assert_eq!(config.default_account(), "bob@example.test");
+    }
+
+    #[test]
+    fn a_sign_in_replaces_a_stale_default_and_keeps_a_valid_one() {
+        let client = || ClientConfig {
+            client_id: "00000000-0000-4000-8000-000000000002".into(),
+            tenant_id: "00000000-0000-4000-8000-000000000001".into(),
+        };
+        let stale = ConfigDir::new(&["new@example.test"], "gone@example.test");
+        record_login(&account("new@example.test"), client()).unwrap();
+        assert_eq!(stale.default_account(), "new@example.test");
+        drop(stale);
+        let valid = ConfigDir::new(
+            &["old@example.test", "new@example.test"],
+            "old@example.test",
+        );
+        record_login(&account("new@example.test"), client()).unwrap();
+        assert_eq!(valid.default_account(), "old@example.test");
     }
 
     #[test]
