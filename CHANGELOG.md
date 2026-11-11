@@ -11,7 +11,7 @@
 - Trim spaces around a person key, so a pasted object id or address is no longer searched for as a name.
 - Retry a Graph response whose body is cut off part way, as a failed connection already was.
 - Add `entra user disabled-manager`, and the same check as `entra user list --disabled-manager`, listing everyone whose manager's account is disabled, grouped by manager. People whose own account is disabled are left out unless `--include-disabled` is given. It needs `User.Read.All`, as `user list` does.
-- Make `--wrap-untrusted` also mark `employeeType`, which is free text set in the directory.
+- Make `--wrap-untrusted` also mark `employeeType` and `employeeId`, which are free text set in the directory.
 - Rewrite the help for every command and subcommand, with usage examples throughout. `user manager`, `user reports` and `user chain` now say which way each one looks: one level up, one level down, or the whole line upwards. Global options move under their own `Global Options` heading, and the rarely used ones appear only in `--help`, not `-h`.
 
 ## v0.4.1 - 2026-11-07

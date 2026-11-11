@@ -537,6 +537,7 @@ impl User {
             &mut out.company_name,
             &mut out.office_location,
             &mut out.employee_type,
+            &mut out.employee_id,
         ] {
             if !value.is_empty() {
                 *value = format!("[UNTRUSTED:{id}]{value}[/UNTRUSTED:{id}]");
