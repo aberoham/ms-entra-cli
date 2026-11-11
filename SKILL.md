@@ -1,6 +1,6 @@
 ---
 name: entra-cli
-description: Look up people in Microsoft Entra ID (Azure Active Directory) from the terminal via the `entra` CLI — a person's manager, their direct reports, the management chain above them, and extended record details including every email alias. Use whenever a task needs a reporting line, a manager check, resolving which of someone's two addresses is which, or confirming whether two addresses are one mailbox or two.
+description: Look up people in Microsoft Entra ID (Azure Active Directory) from the terminal via the `entra` CLI — a person's manager, their direct reports, the management chain above them, extended record details including every email alias, group memberships, people whose manager's account is disabled, licence holders and Microsoft 365 Copilot usage reports. Use whenever a task needs a reporting line, a manager check, a sweep for people left under a disabled manager, resolving which of someone's two addresses is which, confirming whether two addresses are one mailbox or two, group membership, licence assignment or Copilot usage.
 homepage: https://github.com/aberoham/ms-entra-cli
 ---
 
