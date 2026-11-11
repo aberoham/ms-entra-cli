@@ -23,7 +23,7 @@ feeds the directory — not in a lookup tool.
 | `entra user disabled-manager` | `User.Read.All` |
 | `entra licences list` | `LicenseAssignment.Read.All`, and a role such as Directory Readers or Global Reader |
 | `entra licences holders` | `User.Read.All`; a licence name in `--sku` also needs what `licences list` needs |
-| `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader, AI Administrator or Global Reader; `copilot-usage` also needs `User.Read.All` |
+| `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader or AI Administrator (Global Reader cannot read per-person rows); `copilot-usage` also needs `User.Read.All` |
 | `entra reports settings` | `ReportSettings.Read.All`, and a role as for `copilot-*` |
 | `entra auth *` | none beyond sign-in |
 
@@ -43,8 +43,11 @@ Login takes the client ID from `--client-id` or `ENTRA_CLIENT_ID`, and the
 tenant ID from `--tenant-id` or `ENTRA_TENANT_ID`. Without them it reuses the
 registration saved at an earlier login (see
 [auth.md](auth.md#sign-in)), so only the first sign-in needs them. `--directory` requests
-`User.Read.All` and `AuditLog.Read.All`; without it, manager, reporting-line and
-sign-in-activity lookups will not work. Sign-in activity additionally requires
+`User.Read.All` and `AuditLog.Read.All`. With no scope flags, manager,
+reporting-line and sign-in-activity lookups will not work; `--lifecycle`,
+`--groups`, `--licences` and `--reports` also bring `User.Read.All`, enough for
+manager and reporting-line lookups but not for sign-in activity, which needs
+`AuditLog.Read.All` from `--directory`. Sign-in activity additionally requires
 an eligible licence and a supported role on the signed-in account.
 `--lifecycle` requests `User-LifeCycleInfo.Read.All`, without which Graph
 returns every employee leave date as `null`; the signed-in account also needs
@@ -390,8 +393,8 @@ entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable output with an envelope |
-| `--plain` | Lists and tables as tab-separated values, no header row; the `user get` summary prints `Label: value` lines, `user get --all`/`--group` print JSON, and `auth` and `version` print sentences |
 | `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; a name with no matching column is an error; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
+| `--plain` | Lists and tables as tab-separated values, no header row; the `user get` summary prints `Label: value` lines, `user get --all`/`--group` print JSON, `auth list` prints rows, and the other `auth` commands and `version` print sentences |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
 | `--timeout N` | Request timeout in seconds; 0 means 60, and values above 600 are clamped to 600 |

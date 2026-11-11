@@ -126,11 +126,26 @@ fn user_help_states_the_direction_of_each_reporting_line_command() {
         .args(["user", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match(r"(?m)^\s+manager\s.*one level up").unwrap())
-        .stdout(predicate::str::is_match(r"(?m)^\s+reports\s.*one level down only").unwrap())
-        .stdout(predicate::str::is_match(r"(?m)^\s+chain\s.*upwards").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\s+manager\s+.*one level up").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\s+reports\s+.*one level down only").unwrap())
+        .stdout(predicate::str::is_match(r"(?m)^\s+chain\s+.*upwards").unwrap())
         .stdout(predicate::str::contains("user list --manager --json"))
         .stdout(predicate::str::contains("Examples:"));
+    // Each command's own help must say it too, since that is what a reader
+    // of `entra user manager -h` sees.
+    for (subcommand, direction) in [
+        ("manager", "one level up"),
+        ("reports", "one level down"),
+        ("chain", "upwards"),
+    ] {
+        for flag in ["-h", "--help"] {
+            let mut own = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+            let output = own.args(["user", subcommand, flag]).output().unwrap();
+            let text = String::from_utf8(output.stdout).unwrap();
+            let first = text.lines().next().unwrap_or_default();
+            assert!(first.contains(direction), "{subcommand} {flag}: {first}");
+        }
+    }
 }
 
 #[test]
@@ -141,13 +156,27 @@ fn every_user_lookup_explains_the_keys_it_accepts() {
             .args(["user", subcommand, "-h"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("<UPN|EMAIL|ID|NAME>"))
+            .stdout(predicate::str::is_match(
+                r"<UPN\|EMAIL\|ID\|NAME>\s+Sign-in name, email address or alias, object id, or name",
+            )
+            .unwrap())
             .stdout(predicate::str::contains("--wrap-untrusted").not());
         let mut long = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
         long.args(["user", subcommand, "--help"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("exact display name or surname"))
+            .stdout(predicate::str::contains(
+                "sign-in name, primary email address or any of their aliases",
+            ))
+            .stdout(predicate::str::contains(
+                "display name or surname starts with it",
+            ))
+            .stdout(predicate::str::contains(
+                "--json and --plain accept only an exact display name or surname",
+            ))
+            .stdout(predicate::str::contains(
+                "When several people match, the command fails instead of choosing",
+            ))
             .stdout(predicate::str::contains("--wrap-untrusted"));
     }
 }

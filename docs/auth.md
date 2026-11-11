@@ -139,7 +139,8 @@ It stays outside `--directory` for the same reason as `--lifecycle`.
 The `reports` commands read Microsoft 365 usage reports. That needs
 `Reports.Read.All`, or `ReportSettings.Read.All` for `reports settings`, and,
 on the signed-in account, a role that may read usage reports, such as Reports
-Reader, AI Administrator or Global Reader. Graph refuses a missing permission
+Reader or AI Administrator (Global Reader cannot read the per-person
+`copilot-usage` report). Graph refuses a missing permission
 and a missing role the same way, with HTTP 403 and a code such as
 `S2SUnauthorized`, so the error names both. `reports copilot-usage` also reads
 every user's company, which needs `User.Read.All`. Once an administrator has
@@ -409,9 +410,11 @@ entra auth list
 entra whoami
 ```
 
-`--directory` requests `User.Read.All` and `AuditLog.Read.All`. Without it the
-sign-in works, but only `whoami`, `user search` and the basic `user get` fields
-are available. The tool prints a reminder when you sign in without it. Extra
+`--directory` requests `User.Read.All` and `AuditLog.Read.All`. With no scope
+flags the sign-in works, but only `whoami`, `user search` and the basic
+`user get` fields are available. `--lifecycle`, `--groups`, `--licences` and
+`--reports` each bring `User.Read.All` too, which is enough for manager and
+full-profile reads but not for sign-in activity. The tool prints a reminder when you sign in without it. Extra
 scopes can be added with repeatable `--scope` flags. They merge with the
 defaults, and duplicates are removed without regard to case.
 

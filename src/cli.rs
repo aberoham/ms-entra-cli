@@ -109,7 +109,8 @@ pub struct Cli {
 Print lists and tables as tab-separated values with no header row, for \
 scripts. Single records keep their own form: the 'user get' summary prints \
 one 'Label: value' line per field, 'user get --all' and '--group' print JSON, \
-and the auth and version commands print sentences."
+'auth list' prints rows, and the other auth commands and version print \
+sentences."
     )]
     plain: bool,
     #[arg(
@@ -270,7 +271,8 @@ decides whether reports show real names.
 
 The Copilot reports need Reports.Read.All, and 'settings' needs \
 ReportSettings.Read.All. All of them need an Entra role such as Reports \
-Reader, AI Administrator or Global Reader. Sign in with 'entra auth login \
+Reader or AI Administrator; Global Reader cannot read per-person usage. Sign \
+in with 'entra auth login \
 --reports'. They use one account: the default, or the one named by \
 --account.",
         after_help = "\
@@ -302,7 +304,13 @@ Examples:
   entra auth list"
     )]
     Auth(AuthArgs),
-    #[command(about = "Show the version, commit and build date")]
+    #[command(
+        about = "Show the version, commit and build date",
+        after_help = "\
+Examples:
+  entra version
+  entra version --json"
+    )]
     Version,
 }
 
@@ -365,9 +373,21 @@ Examples:
         )]
         email: Option<String>,
     },
-    #[command(about = "List the signed-in accounts; * marks the default")]
+    #[command(
+        about = "List the signed-in accounts; * marks the default",
+        after_help = "\
+Examples:
+  entra auth list
+  entra auth list --json"
+    )]
     List,
-    #[command(about = "Show the selected account and check its token by reading its profile")]
+    #[command(
+        about = "Show the selected account and check its token by reading its profile",
+        after_help = "\
+Examples:
+  entra auth status
+  entra auth status --account someone@example.com --json"
+    )]
     Status,
 }
 
@@ -660,7 +680,11 @@ List the licences the tenant subscribes to, with their names, SKU ids, and \
 assigned and enabled counts.
 
 Needs LicenseAssignment.Read.All (sign in with 'entra auth login --licences') \
-and a role such as Directory Readers or Global Reader."
+and a role such as Directory Readers or Global Reader.",
+        after_help = "\
+Examples:
+  entra licences list
+  entra licences list --plain --select SKU,ID"
     )]
     List,
     #[command(
@@ -706,8 +730,8 @@ Show each person's Microsoft 365 Copilot activity over the period, or totals \
 of users, active users and prompts per company with --by-company.
 
 Needs Reports.Read.All and User.Read.All, the second to match people to \
-their company, and a role such as Reports Reader, AI Administrator or Global \
-Reader. Sign in with 'entra auth login --reports'.",
+their company, and a role such as Reports Reader or AI Administrator. Global \
+Reader is not enough for per-person rows. Sign in with 'entra auth login --reports'.",
         after_help = "\
 Examples:
   entra reports copilot-usage
@@ -720,8 +744,8 @@ Examples:
 Show active and enabled Microsoft 365 Copilot users per app over the period, \
 with the period's prompt totals.
 
-Needs Reports.Read.All and a role such as Reports Reader, AI Administrator or \
-Global Reader. Sign in with 'entra auth login --reports'.",
+Needs Reports.Read.All and a role such as Reports Reader or AI \
+Administrator. Sign in with 'entra auth login --reports'.",
         after_help = "\
 Examples:
   entra reports copilot-summary
@@ -734,8 +758,8 @@ Examples:
 Show Microsoft 365 Copilot active users and prompts for each day of the \
 period.
 
-Needs Reports.Read.All and a role such as Reports Reader, AI Administrator or \
-Global Reader. Sign in with 'entra auth login --reports'.",
+Needs Reports.Read.All and a role such as Reports Reader or AI \
+Administrator. Sign in with 'entra auth login --reports'.",
         after_help = "\
 Examples:
   entra reports copilot-trend
@@ -748,8 +772,8 @@ Examples:
 Show whether the tenant's usage reports conceal people's names. When they \
 do, 'copilot-usage' cannot match people to their company.
 
-Needs ReportSettings.Read.All and a role such as Reports Reader, AI \
-Administrator or Global Reader. Sign in with 'entra auth login --reports'.",
+Needs ReportSettings.Read.All and a role such as Reports Reader or AI \
+Administrator. Sign in with 'entra auth login --reports'.",
         after_help = "\
 Examples:
   entra reports settings
