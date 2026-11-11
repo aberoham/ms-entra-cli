@@ -132,12 +132,23 @@ fn membership_error(error: EntraError, key: &str) -> EntraError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GraphClient {
     http: reqwest::Client,
     access_token: String,
     base_url: Url,
     verbose: bool,
+}
+
+/// Leaves the bearer token out, so a debug print can never leak it.
+impl std::fmt::Debug for GraphClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GraphClient")
+            .field("base_url", &self.base_url.as_str())
+            .field("verbose", &self.verbose)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GraphClient {
@@ -390,6 +401,11 @@ impl GraphClient {
             let Some(manager) = self.get_manager(current_id).await? else {
                 break;
             };
+            if manager.id.is_empty() {
+                return Err(EntraError::message(
+                    "Graph returned a manager without an object id, so the chain cannot continue",
+                ));
+            }
             if !seen.insert(manager.id.clone()) {
                 break;
             }
@@ -631,8 +647,18 @@ impl GraphClient {
             .append_pair("$select", &PROFILE_FIELDS.join(","))
             .append_pair("$filter", &filter)
             .append_pair("$top", "2");
-        let page: Page<User> = self.get_json(url).await?;
-        page.value
+        // Graph may split even two results across pages, so read until two
+        // are found or the pages run out.
+        let found: Vec<User> = self.get_all_pages(url, Some(2)).await?;
+        // Two objects can hold one address, such as a guest whose mail
+        // matches a member's alias; pick neither.
+        if found.len() > 1 {
+            return Err(EntraError::AmbiguousUser {
+                key: address.to_owned(),
+                candidates: found.iter().map(person_label).collect(),
+            });
+        }
+        found
             .into_iter()
             .next()
             .ok_or_else(|| EntraError::UserNotFound {
@@ -767,6 +793,13 @@ impl GraphClient {
     }
 
     fn user_url(&self, key: &str) -> Result<Url> {
+        // A URL path treats these as navigation, not as a segment, so they
+        // would address the collection or its parent instead of a person.
+        if matches!(key.trim(), "" | "." | "..") {
+            return Err(EntraError::UserNotFound {
+                key: key.to_owned(),
+            });
+        }
         let mut url = self.base_url.clone();
         url.path_segments_mut()
             .map_err(|_| EntraError::message("Graph base URL cannot hold path segments"))?
@@ -826,30 +859,53 @@ impl GraphClient {
                     )));
                 }
             }
-            let mut response = response;
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await? {
-                if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-                    return Err(EntraError::message(format!(
-                        "Graph response is too large (more than {MAX_RESPONSE_BYTES} bytes)"
-                    )));
+            let body = match read_bounded_body(response).await {
+                Ok(body) => body,
+                // A connection that drops part way through a body is as
+                // transient as one that fails before the headers.
+                Err(EntraError::Http(error))
+                    if attempt < MAX_ATTEMPTS
+                        && (error.is_timeout() || error.is_body() || error.is_decode()) =>
+                {
+                    sleep(retry_delay(retry_after, attempt)).await;
+                    continue;
                 }
-                body.extend_from_slice(&chunk);
-            }
+                Err(error) => return Err(error),
+            };
             if status.is_success() {
                 return Ok(body);
             }
             let retryable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if retryable && attempt < MAX_ATTEMPTS {
-                let delay =
-                    retry_after.unwrap_or_else(|| Duration::from_millis(250 << (attempt - 1)));
-                sleep(delay.min(Duration::from_secs(30))).await;
+                sleep(retry_delay(retry_after, attempt)).await;
                 continue;
             }
             return Err(EntraError::from_graph(status.as_u16(), &body));
         }
         Err(EntraError::message("Graph request exhausted its retries"))
     }
+}
+
+/// How long to wait before another attempt: Graph's numeric `Retry-After`
+/// when it sent one, otherwise an exponential backoff, never above 30 seconds.
+fn retry_delay(retry_after: Option<Duration>, attempt: usize) -> Duration {
+    retry_after
+        .unwrap_or_else(|| Duration::from_millis(250 << (attempt - 1)))
+        .min(Duration::from_secs(30))
+}
+
+/// Reads a response body, refusing one larger than `MAX_RESPONSE_BYTES`.
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(EntraError::message(format!(
+                "Graph response is too large (more than {MAX_RESPONSE_BYTES} bytes)"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Gives every listed record an explicit `manager` value. Graph omits the key
@@ -881,7 +937,7 @@ fn attribute_permission(error: EntraError, properties: &[&str]) -> EntraError {
 pub fn odata_literal(value: &str) -> Result<String> {
     if value.len() > MAX_QUERY_LENGTH {
         return Err(EntraError::message(format!(
-            "query is too long ({} characters, maximum {MAX_QUERY_LENGTH})",
+            "query is too long ({} bytes of UTF-8, maximum {MAX_QUERY_LENGTH})",
             value.len()
         )));
     }
@@ -916,6 +972,110 @@ mod tests {
         GraphClient::new("test-token", Duration::from_secs(2), false)
             .unwrap()
             .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+    }
+
+    #[tokio::test]
+    async fn dot_and_empty_keys_never_reach_a_url() {
+        let server = MockServer::start().await;
+        let graph = client(&server).await;
+        for key in ["", " ", ".", ".."] {
+            let error = graph.get_direct_reports(key).await.unwrap_err();
+            assert!(error.is_not_found(), "{key:?}: {error}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_chain_stops_at_a_manager_without_an_object_id() {
+        let server = MockServer::start().await;
+        let start = "00000000-0000-4000-8000-000000000061";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{start}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(person(start, "Al")))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{start}/manager")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"displayName": "No Id"})))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_chain(start, 5).await.unwrap_err();
+        assert!(
+            error.to_string().contains("without an object id"),
+            "{error}"
+        );
+    }
+
+    /// Serves two responses on a raw socket: the first cut off half way
+    /// through its body with the given status line and extra headers, the
+    /// second complete. Returns the client's base address.
+    async fn cut_off_then_complete(
+        first_status: &'static str,
+        first_headers: &'static str,
+        body: String,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for complete in [false, true] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 4096];
+                let _ = stream.read(&mut request).await.unwrap();
+                let (status, headers, sent) = if complete {
+                    ("200 OK", "", body.len())
+                } else {
+                    (first_status, first_headers, body.len() / 2)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{headers}\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    &body[..sent]
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (address, server)
+    }
+
+    fn raw_client(address: std::net::SocketAddr) -> GraphClient {
+        GraphClient::new("test-token", Duration::from_secs(5), false)
+            .unwrap()
+            .with_base_url(Url::parse(&format!("http://{address}/v1.0/")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_body_cut_off_part_way_is_retried() {
+        let body =
+            json!({"id": "00000000-0000-4000-8000-000000000051", "displayName": "Al"}).to_string();
+        let (address, server) = cut_off_then_complete("200 OK", "", body).await;
+        let user = raw_client(address)
+            .get_user("00000000-0000-4000-8000-000000000051")
+            .await
+            .unwrap();
+        assert_eq!(user.display_name, "Al");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_throttling_response_still_waits_for_retry_after() {
+        let body =
+            json!({"id": "00000000-0000-4000-8000-000000000052", "displayName": "Bo"}).to_string();
+        let (address, server) =
+            cut_off_then_complete("429 Too Many Requests", "Retry-After: 1\r\n", body).await;
+        let started = std::time::Instant::now();
+        let user = raw_client(address)
+            .get_user("00000000-0000-4000-8000-000000000052")
+            .await
+            .unwrap();
+        assert_eq!(user.display_name, "Bo");
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        server.await.unwrap();
     }
 
     fn person(id: &str, name: &str) -> Value {
@@ -1144,6 +1304,9 @@ mod tests {
         assert_eq!(odata_literal("o'brien").unwrap(), "o''brien");
         assert!(odata_literal("bad\0value").is_err());
         assert!(odata_literal(&"a".repeat(MAX_QUERY_LENGTH + 1)).is_err());
+        // The bound is in bytes: 129 two-byte letters are 258 bytes.
+        let error = odata_literal(&"é".repeat(129)).unwrap_err().to_string();
+        assert!(error.contains("258 bytes of UTF-8, maximum 256"), "{error}");
     }
 
     #[test]
@@ -1158,6 +1321,68 @@ mod tests {
         );
         assert!(error.to_string().contains("AuditLog.Read.All"));
         assert!(!error.to_string().contains("lacks delegated User.Read.All"));
+    }
+
+    #[tokio::test]
+    async fn an_address_match_on_a_later_page_still_makes_it_ambiguous() {
+        let server = MockServer::start().await;
+        let address = "shared@example.test";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{address}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "Request_ResourceNotFound", "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+        let next = format!("{}/v1.0/users?page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [person("00000000-0000-4000-8000-000000000033", "First")],
+                "@odata.nextLink": next,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [person("00000000-0000-4000-8000-000000000034", "Second")],
+            })))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_user(address).await.unwrap_err();
+        assert_eq!(error.metadata().0, "AmbiguousUser", "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_address_held_by_two_objects_is_ambiguous() {
+        let server = MockServer::start().await;
+        let address = "shared@example.test";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{address}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "Request_ResourceNotFound", "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "00000000-0000-4000-8000-000000000031", "displayName": "Member",
+                 "userPrincipalName": "member@example.test"},
+                {"id": "00000000-0000-4000-8000-000000000032", "displayName": "Guest",
+                 "userPrincipalName": "guest#EXT#@example.test"},
+            ]})))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_user(address).await.unwrap_err();
+        assert_eq!(error.metadata().0, "AmbiguousUser", "{error}");
+        let message = error.to_string();
+        assert!(message.contains("member@example.test"), "{message}");
+        assert!(message.contains("guest#EXT#@example.test"), "{message}");
     }
 
     #[tokio::test]

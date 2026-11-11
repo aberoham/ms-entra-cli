@@ -22,12 +22,18 @@ use crate::model::{
     SubscribedSku, User,
 };
 use crate::output::{
-    sanitize, sanitize_multiline, write_company_counts, write_company_usage, write_copilot_summary,
-    write_copilot_trend, write_copilot_usage, write_group_memberships, write_licence_holders,
-    write_managed_users, write_pretty_json, write_report_settings, write_rows, write_skus,
-    write_users, OutputFormat, OutputOptions,
+    columns, sanitize, sanitize_multiline, selected_indices, write_company_counts,
+    write_company_usage, write_copilot_summary, write_copilot_trend, write_copilot_usage,
+    write_group_memberships, write_licence_holders, write_managed_users, write_pretty_json,
+    write_report_settings, write_rows, write_skus, write_users, OutputFormat, OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
+
+/// Drops the spaces a paste often carries, so a pasted object id or address
+/// is still recognised as one rather than searched for as a name.
+fn person_key_arg(value: &str) -> std::result::Result<String, String> {
+    Ok(value.trim().to_owned())
+}
 
 /// Short help for the person argument of the single-person user commands.
 const PERSON_HELP: &str = "Sign-in name, email address or alias, object id, or name";
@@ -150,7 +156,8 @@ default account only."
         help = "Show only these columns of a table or --plain list, such as NAME,EMAIL",
         long_help = "\
 Show only these columns of a table or --plain list, in this order, by their \
-header names, such as NAME,EMAIL or \"NAME,SIGN-IN NAME\". Case is ignored.
+header names, such as NAME,EMAIL or \"NAME,SIGN-IN NAME\". Case is ignored. \
+A name the output has no column for is an error that lists its columns.
 
 It has no effect on --json output, on the 'user chain' tree, or on the \
 'user get' record and its --all or --group views. It does apply to the \
@@ -525,7 +532,7 @@ Examples:
   entra user manager jane.doe@example.com --json"
     )]
     Manager {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
     },
     #[command(
@@ -543,7 +550,7 @@ Examples:
   entra user reports jane.doe@example.com --plain --select NAME,EMAIL"
     )]
     Reports {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
     },
     #[command(
@@ -562,7 +569,7 @@ Examples:
   entra user chain jane.doe@example.com --json"
     )]
     Chain {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
         #[arg(
             long,
@@ -587,7 +594,7 @@ Examples:
   entra user groups jane.doe@example.com --kind distribution"
     )]
     Groups {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
         #[arg(long, value_enum, help = "Show only groups of this kind")]
         kind: Option<GroupKind>,
@@ -882,7 +889,7 @@ struct DisabledManagerArgs {
 
 #[derive(Debug, Clone, Args)]
 struct UserGet {
-    #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+    #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
     key: String,
     #[arg(
         long,
@@ -913,8 +920,19 @@ pub async fn execute() -> i32 {
                 error.kind(),
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
             );
-            let _ = error.print();
-            return if informational { 0 } else { 1 };
+            if informational {
+                let _ = error.print();
+                return 0;
+            }
+            // Arguments that fail to parse are still argument errors, so a
+            // caller who asked for JSON gets the JSON error shape.
+            if json_requested(std::env::args_os(), std::env::var_os("ENTRA_JSON")) {
+                let message = error.render().to_string();
+                write_command_error(true, &EntraError::message(message.trim()));
+            } else {
+                let _ = error.print();
+            }
+            return 1;
         }
     };
     let json_mode = cli.json;
@@ -929,6 +947,11 @@ pub async fn execute() -> i32 {
 
 async fn run(mut cli: Cli) -> Result<()> {
     validate_command(&cli.command, cli.json)?;
+    if !cli.json {
+        if let Some(headers) = table_columns(&cli.command, cli.plain) {
+            selected_indices(&cli.select, headers)?;
+        }
+    }
     if cli.timeout == 0 {
         cli.timeout = 60;
     } else if cli.timeout > 600 {
@@ -1020,6 +1043,45 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The columns a command's table or `--plain` output has, so `--select` can
+/// be checked before signing in. `None` means the output is not a table and
+/// `--select` does not apply to it.
+fn table_columns(command: &Command, plain: bool) -> Option<&'static [&'static str]> {
+    match command {
+        Command::Whoami => Some(columns::USERS),
+        Command::Auth(AuthArgs {
+            command: AuthCommand::List,
+        }) => Some(columns::ACCOUNTS),
+        Command::Auth(_) | Command::Version => None,
+        Command::User(UserArgs { command }) => match command {
+            UserCommand::Get(get) => (get.sign_in_activity && !get.all && get.groups.is_empty())
+                .then_some(columns::SIGN_IN_ACTIVITY),
+            UserCommand::Manager { .. }
+            | UserCommand::Reports { .. }
+            | UserCommand::Search { .. } => Some(columns::USERS),
+            UserCommand::Chain { .. } => plain.then_some(columns::USERS),
+            UserCommand::Groups { .. } => Some(columns::GROUP_MEMBERSHIPS),
+            UserCommand::DisabledManager(_) => Some(columns::MANAGED_USERS),
+            UserCommand::List(list) if list.disabled_manager => Some(columns::MANAGED_USERS),
+            UserCommand::List(list) => (!list.is_deep()).then_some(columns::USERS),
+        },
+        Command::Licences(LicencesArgs { command }) => match command {
+            LicencesCommand::List => Some(columns::SKUS),
+            LicencesCommand::Holders(holders) if holders.by_company => {
+                Some(columns::COMPANY_COUNTS)
+            }
+            LicencesCommand::Holders(_) => Some(columns::LICENCE_HOLDERS),
+        },
+        Command::Reports(ReportsArgs { command }) => match command {
+            ReportsCommand::CopilotUsage(args) if args.by_company => Some(columns::COMPANY_USAGE),
+            ReportsCommand::CopilotUsage(_) => Some(columns::COPILOT_USAGE),
+            ReportsCommand::CopilotSummary(_) => Some(columns::COPILOT_APPS),
+            ReportsCommand::CopilotTrend(_) => Some(columns::COPILOT_TREND),
+            ReportsCommand::Settings => Some(columns::REPORT_SETTINGS),
+        },
+    }
+}
+
 /// The person a user command looks up, for the commands that take one.
 fn person_key(command: &UserCommand) -> Option<&str> {
     match command {
@@ -1084,6 +1146,13 @@ async fn run_auth(
             let email = account.email;
             let auth = Authenticator::new(store, "", DEFAULT_TENANT_ID)?;
             auth.logout(&email)?;
+            if config.default_account.eq_ignore_ascii_case(&email) {
+                let mut config = config;
+                config.default_account = next_default_account(auth.list_accounts()?, &email);
+                config
+                    .save()
+                    .map_err(|error| error.context("saving config"))?;
+            }
             if output.format == OutputFormat::Json {
                 let result = json!({"account": email, "signedOut": true});
                 return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
@@ -1115,7 +1184,7 @@ async fn run_auth(
                     ]
                 })
                 .collect();
-            write_rows(io::stdout(), output, &["EMAIL", "NAME", "DEFAULT"], &rows)
+            write_rows(io::stdout(), output, columns::ACCOUNTS, &rows)
         }
         AuthCommand::Status => run_auth_status(cli, output, store).await,
     }
@@ -1246,20 +1315,13 @@ async fn run_login(
         auth.login_device_code(&scopes, cli.verbose).await
     }
     .map_err(|error| error.context("login failed"))?;
-    let mut config = Config::load().map_err(|error| error.context("loading config"))?;
-    config.clients.insert(
-        info.email.clone(),
+    record_login(
+        &info,
         ClientConfig {
             client_id,
             tenant_id,
         },
-    );
-    if config.default_account.is_empty() {
-        config.default_account = info.email.clone();
-    }
-    config
-        .save()
-        .map_err(|error| error.context("saving config"))?;
+    )?;
     let note = "Note: full directory and sign-in-activity lookups need 'entra auth login --directory',\nwhich requests User.Read.All and AuditLog.Read.All and requires administrator consent.";
     if output.format == OutputFormat::Json {
         if !login.directory {
@@ -1276,6 +1338,21 @@ async fn run_login(
         println!("{note}");
     }
     Ok(())
+}
+
+/// Saves a completed sign-in's app registration, and makes the account the
+/// default when there is none. A default left behind by an account that was
+/// signed out names nobody, so the account just signed in replaces it.
+fn record_login(info: &AccountInfo, client: ClientConfig) -> Result<()> {
+    let mut config = Config::load().map_err(|error| error.context("loading config"))?;
+    config.clients.insert(info.email.clone(), client);
+    let accounts = crate::auth::list_accounts()?;
+    if !is_stored_account(&config.default_account, &accounts) {
+        config.default_account = info.email.clone();
+    }
+    config
+        .save()
+        .map_err(|error| error.context("saving config"))
 }
 
 /// What `auth login --json` reports. The display name comes from the
@@ -1302,10 +1379,11 @@ fn login_json(output: &OutputOptions, info: &AccountInfo) -> Result<Value> {
 
 impl LoginResult {
     fn wrap_untrusted(&self, id: &str) -> Self {
-        Self {
-            display_name: format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", self.display_name),
-            ..self.clone()
+        let mut out = self.clone();
+        if !out.display_name.is_empty() {
+            out.display_name = format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", out.display_name);
         }
+        out
     }
 }
 
@@ -2103,6 +2181,23 @@ async fn resolve_account_identifier(
     }
 }
 
+fn is_stored_account(email: &str, accounts: &[AccountInfo]) -> bool {
+    !email.is_empty()
+        && accounts
+            .iter()
+            .any(|account| account.email.eq_ignore_ascii_case(email))
+}
+
+/// The default after `signed_out` signs out: the first remaining account in
+/// address order, or none.
+fn next_default_account(accounts: Vec<AccountInfo>, signed_out: &str) -> String {
+    ordered_accounts(accounts, "")
+        .into_iter()
+        .map(|account| account.email)
+        .find(|email| !email.eq_ignore_ascii_case(signed_out))
+        .unwrap_or_default()
+}
+
 fn ordered_accounts(mut accounts: Vec<AccountInfo>, default_account: &str) -> Vec<AccountInfo> {
     accounts.sort_by(|left, right| {
         left.email
@@ -2191,11 +2286,11 @@ fn list_properties(list: &UserList) -> Result<Vec<&'static str>> {
     Ok(properties)
 }
 
+/// A refusal the sign-in-activity read can recover from by dropping that
+/// property: a missing permission or an unsupported role, judged by type and
+/// never by Graph's wording.
 fn is_sign_in_activity_refusal(error: &EntraError) -> bool {
-    error.is_sign_in_activity_role_refusal() || {
-        let lower = error.to_string().to_ascii_lowercase();
-        lower.contains("signinactivity") || lower.contains("auditlog") || error.is_permission()
-    }
+    error.is_authorization_failure()
 }
 
 const SIGN_IN_TIMESTAMPS: [(&str, &str, &str); 3] = [
@@ -2297,18 +2392,7 @@ fn write_sign_in_activity(
         )?;
         return Ok(());
     }
-    write_rows(
-        &mut writer,
-        output,
-        &[
-            "ACTIVITY",
-            "ENTRA TIMESTAMP",
-            "AGE SECONDS",
-            "AGE",
-            "REQUEST ID",
-        ],
-        &rows,
-    )
+    write_rows(&mut writer, output, columns::SIGN_IN_ACTIVITY, &rows)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2359,6 +2443,23 @@ fn human_age(seconds: i64) -> String {
     } else {
         format!("in {duration}")
     }
+}
+
+/// Whether JSON output was asked for, read without clap because clap has
+/// just refused the arguments. `--json` counts only before a `--` that ends
+/// the options. Clap accepts only `true` or `false` for `ENTRA_JSON`, so only
+/// `true` asks for JSON here.
+fn json_requested(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    env: Option<std::ffi::OsString>,
+) -> bool {
+    let flag = args
+        .into_iter()
+        .skip(1)
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json");
+    let from_env = env.is_some_and(|value| value == "true");
+    flag || from_env
 }
 
 fn write_command_error(json_mode: bool, error: &EntraError) {
@@ -2524,6 +2625,136 @@ mod tests {
             client_id: "00000000-0000-4000-8000-000000000002".into(),
             login_time: "2026-08-31T00:00:00Z".into(),
         }
+    }
+
+    /// Points the config directory at a fresh temporary one for one test.
+    /// Tests that do this hold the lock, since the variable is process-wide.
+    struct ConfigDir {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        directory: tempfile::TempDir,
+    }
+
+    impl ConfigDir {
+        fn new(accounts: &[&str], default_account: &str) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let guard = LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let directory = tempfile::tempdir().unwrap();
+            std::env::set_var("ENTRA_CONFIG_DIR", directory.path());
+            std::fs::create_dir_all(directory.path().join("accounts")).unwrap();
+            for email in accounts {
+                std::fs::write(
+                    directory
+                        .path()
+                        .join("accounts")
+                        .join(format!("{email}.json")),
+                    serde_json::to_vec(&account(email)).unwrap(),
+                )
+                .unwrap();
+            }
+            Config {
+                default_account: default_account.into(),
+                ..Config::default()
+            }
+            .save()
+            .unwrap();
+            Self {
+                _guard: guard,
+                directory,
+            }
+        }
+
+        fn default_account(&self) -> String {
+            Config::load_from(&self.directory.path().join("config.json"))
+                .unwrap()
+                .default_account
+        }
+    }
+
+    impl Drop for ConfigDir {
+        fn drop(&mut self) {
+            std::env::remove_var("ENTRA_CONFIG_DIR");
+        }
+    }
+
+    async fn sign_out(email: &str) {
+        let cli = Cli::try_parse_from(["entra", "auth", "logout", email]).unwrap();
+        let store: Arc<dyn CredentialStore> =
+            Arc::new(crate::secrets::test_support::MemoryStore::default());
+        run_auth(
+            &cli,
+            &json_output(false),
+            store,
+            AuthCommand::Logout {
+                email: Some(email.into()),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn signing_out_the_default_account_saves_a_remaining_one_as_default() {
+        let config = ConfigDir::new(
+            &["amy@example.test", "bob@example.test"],
+            "bob@example.test",
+        );
+        sign_out("bob@example.test").await;
+        assert_eq!(config.default_account(), "amy@example.test");
+    }
+
+    #[tokio::test]
+    async fn signing_out_another_account_keeps_the_default() {
+        let config = ConfigDir::new(
+            &["amy@example.test", "bob@example.test"],
+            "bob@example.test",
+        );
+        sign_out("amy@example.test").await;
+        assert_eq!(config.default_account(), "bob@example.test");
+    }
+
+    #[test]
+    fn a_sign_in_replaces_a_stale_default_and_keeps_a_valid_one() {
+        let client = || ClientConfig {
+            client_id: "00000000-0000-4000-8000-000000000002".into(),
+            tenant_id: "00000000-0000-4000-8000-000000000001".into(),
+        };
+        let stale = ConfigDir::new(&["new@example.test"], "gone@example.test");
+        record_login(&account("new@example.test"), client()).unwrap();
+        assert_eq!(stale.default_account(), "new@example.test");
+        drop(stale);
+        let valid = ConfigDir::new(
+            &["old@example.test", "new@example.test"],
+            "old@example.test",
+        );
+        record_login(&account("new@example.test"), client()).unwrap();
+        assert_eq!(valid.default_account(), "old@example.test");
+    }
+
+    #[test]
+    fn signing_out_the_default_moves_it_to_a_remaining_account() {
+        let remaining = || vec![account("zed@example.test"), account("amy@example.test")];
+        assert_eq!(
+            next_default_account(remaining(), "bob@example.test"),
+            "amy@example.test"
+        );
+        // The store may still list the account while it is being removed.
+        let mut with_self = remaining();
+        with_self.push(account("Bob@example.test"));
+        assert_eq!(
+            next_default_account(with_self, "bob@example.test"),
+            "amy@example.test"
+        );
+        assert_eq!(next_default_account(Vec::new(), "bob@example.test"), "");
+    }
+
+    #[test]
+    fn a_default_naming_no_stored_account_is_replaced_at_sign_in() {
+        let accounts = [account("Amy@example.test")];
+        assert!(is_stored_account("amy@example.test", &accounts));
+        assert!(!is_stored_account("gone@example.test", &accounts));
+        assert!(!is_stored_account("", &accounts));
     }
 
     #[test]
@@ -2714,6 +2945,42 @@ mod tests {
                 .tenant_id,
             DEFAULT_TENANT_ID
         );
+    }
+
+    #[test]
+    fn json_is_requested_by_the_flag_before_any_terminator_or_by_the_environment() {
+        let args = |list: &[&str]| -> Vec<std::ffi::OsString> {
+            list.iter().map(std::ffi::OsString::from).collect()
+        };
+        assert!(json_requested(args(&["entra", "user", "--json"]), None));
+        assert!(!json_requested(
+            args(&["entra", "user", "--", "--json"]),
+            None
+        ));
+        assert!(!json_requested(args(&["--json"]), None), "program name");
+        assert!(json_requested(args(&["entra"]), Some("true".into())));
+        // Clap refuses anything but `true` and `false`, so none of these is
+        // a request for JSON.
+        for falsey in ["", "1", "TRUE", "false", "off"] {
+            assert!(
+                !json_requested(args(&["entra"]), Some(falsey.into())),
+                "{falsey}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pasted_object_id_with_spaces_is_still_an_object_id() {
+        let id = "00000000-0000-4000-8000-000000000041";
+        for command in ["get", "manager", "reports", "chain", "groups"] {
+            let cli = Cli::try_parse_from(["entra", "user", command, &format!(" {id}\t")]).unwrap();
+            let Command::User(UserArgs { command }) = cli.command else {
+                panic!("not a user command");
+            };
+            let key = person_key(&command).unwrap();
+            assert_eq!(key, id, "{command:?}");
+            assert!(!is_name_key(key));
+        }
     }
 
     fn user_list(args: &[&str]) -> UserList {
@@ -4629,6 +4896,82 @@ mod tests {
         let text = String::from_utf8(written).unwrap();
         assert!(text.starts_with(concat!("entra ", env!("CARGO_PKG_VERSION"), " (commit ")));
         assert_eq!(text.lines().count(), 1);
+    }
+
+    #[test]
+    fn select_is_checked_against_the_table_each_command_prints() {
+        let columns_of = |args: &[&str], plain: bool| {
+            let cli = Cli::try_parse_from(["entra"].iter().chain(args)).unwrap();
+            table_columns(&cli.command, plain)
+        };
+        assert_eq!(
+            columns_of(&["user", "chain", "a@example.test"], false),
+            None
+        );
+        assert_eq!(
+            columns_of(&["user", "chain", "a@example.test"], true),
+            Some(columns::USERS)
+        );
+        assert_eq!(columns_of(&["user", "get", "a@example.test"], false), None);
+        assert_eq!(
+            columns_of(
+                &["user", "get", "a@example.test", "--sign-in-activity"],
+                false
+            ),
+            Some(columns::SIGN_IN_ACTIVITY)
+        );
+        assert_eq!(
+            columns_of(&["user", "list", "--disabled-manager"], false),
+            Some(columns::MANAGED_USERS)
+        );
+        assert_eq!(
+            columns_of(
+                &["licences", "holders", "--sku", "E5", "--by-company"],
+                false
+            ),
+            Some(columns::COMPANY_COUNTS)
+        );
+        assert_eq!(
+            columns_of(&["reports", "copilot-usage", "--by-company"], true),
+            Some(columns::COMPANY_USAGE)
+        );
+        assert_eq!(columns_of(&["auth", "status"], false), None);
+    }
+
+    #[test]
+    fn login_json_leaves_an_empty_display_name_empty() {
+        let info = AccountInfo {
+            email: "alex@example.test".into(),
+            display_name: String::new(),
+            tenant_id: "00000000-0000-4000-8000-000000000091".into(),
+            client_id: "00000000-0000-4000-8000-000000000092".into(),
+            login_time: "2026-11-07T12:00:00Z".into(),
+        };
+        let output = OutputOptions {
+            wrap_untrusted: true,
+            ..json_output(true)
+        };
+        assert_eq!(login_json(&output, &info).unwrap()["displayName"], "");
+    }
+
+    #[test]
+    fn sign_in_activity_fallback_follows_the_typed_permission_codes() {
+        for code in [
+            "Authorization_RequestDenied",
+            "Authentication_MSGraphPermissionMissing",
+            "Authentication_RequestFromUnsupportedUserRole",
+        ] {
+            let error = EntraError::Graph {
+                status: 403,
+                code: code.into(),
+                message: "anything".into(),
+            }
+            .context("reading requested attributes");
+            assert!(is_sign_in_activity_refusal(&error), "{code}");
+        }
+        // Wording alone, however it reads, does not trigger the fallback.
+        let worded = EntraError::message("signInActivity needs AuditLog.Read.All");
+        assert!(!is_sign_in_activity_refusal(&worded));
     }
 
     #[test]

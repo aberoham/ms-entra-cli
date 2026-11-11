@@ -440,7 +440,11 @@ impl CopilotUsage {
     pub fn wrap_untrusted(&self, id: &str) -> Self {
         let wrap = |value: &str| format!("[UNTRUSTED:{id}]{value}[/UNTRUSTED:{id}]");
         Self {
-            display_name: wrap(&self.display_name),
+            display_name: if self.display_name.is_empty() {
+                String::new()
+            } else {
+                wrap(&self.display_name)
+            },
             company_name: self.company_name.as_deref().map(wrap),
             department: self.department.as_deref().map(wrap),
             ..self.clone()
@@ -721,6 +725,8 @@ mod tests {
         assert_eq!(row.last_activity_date, None);
         let missing = CopilotUsage::from_report(&record, 90);
         assert_eq!((missing.prompts, missing.active_days), (0, 0));
+        // A concealed report has no names; an empty name stays empty.
+        assert_eq!(row.wrap_untrusted("t").display_name, "");
     }
 
     #[test]

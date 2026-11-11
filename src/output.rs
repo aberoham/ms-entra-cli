@@ -3,7 +3,7 @@ use std::io::Write;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::Result;
+use crate::error::{EntraError, Result};
 use crate::model::{
     CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ReportSettings,
     SubscribedSku, User,
@@ -79,7 +79,7 @@ impl OutputOptions {
         wrap: impl Fn(&T, &str) -> T,
     ) -> Result<Value> {
         let (rows, notice) = if self.wrap_untrusted {
-            let id = untrusted_id();
+            let id = untrusted_id()?;
             (
                 rows.iter().map(|row| wrap(row, &id)).collect::<Vec<_>>(),
                 Some(untrusted_notice(&id)),
@@ -113,7 +113,7 @@ impl OutputOptions {
         wrap: impl Fn(&T, &str) -> T,
     ) -> Result<Value> {
         let (record, notice) = if self.wrap_untrusted {
-            let id = untrusted_id();
+            let id = untrusted_id()?;
             (wrap(record, &id), Some(untrusted_notice(&id)))
         } else {
             (record.clone(), None)
@@ -133,6 +133,50 @@ impl OutputOptions {
     }
 }
 
+/// The columns of each table, named so `--select` can be checked against
+/// them before signing in.
+pub mod columns {
+    pub const USERS: &[&str] = &["NAME", "EMAIL", "SIGN-IN NAME", "JOB TITLE", "DEPARTMENT"];
+    pub const MANAGED_USERS: &[&str] = &[
+        "NAME",
+        "SIGN-IN NAME",
+        "ENABLED",
+        "DEPARTMENT",
+        "MANAGER",
+        "MANAGER SIGN-IN NAME",
+    ];
+    pub const GROUP_MEMBERSHIPS: &[&str] = &["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
+    pub const SKUS: &[&str] = &["SKU", "ID", "ASSIGNED", "ENABLED"];
+    pub const LICENCE_HOLDERS: &[&str] = &["NAME", "SIGN-IN NAME", "COMPANY", "DEPARTMENT"];
+    pub const COMPANY_COUNTS: &[&str] = &["COMPANY", "HOLDERS"];
+    pub const COPILOT_USAGE: &[&str] = &[
+        "NAME",
+        "SIGN-IN NAME",
+        "COMPANY",
+        "LAST ACTIVE",
+        "ACTIVE DAYS",
+        "PROMPTS",
+    ];
+    pub const COMPANY_USAGE: &[&str] = &[
+        "COMPANY",
+        "USERS",
+        "ACTIVE",
+        "PROMPTS",
+        "PROMPTS PER ACTIVE USER",
+    ];
+    pub const COPILOT_APPS: &[&str] = &["APP", "ACTIVE", "ENABLED", "ACTIVE %"];
+    pub const COPILOT_TREND: &[&str] = &["DATE", "ACTIVE", "ENABLED", "PROMPTS"];
+    pub const REPORT_SETTINGS: &[&str] = &["SETTING", "VALUE"];
+    pub const ACCOUNTS: &[&str] = &["EMAIL", "NAME", "DEFAULT"];
+    pub const SIGN_IN_ACTIVITY: &[&str] = &[
+        "ACTIVITY",
+        "ENTRA TIMESTAMP",
+        "AGE SECONDS",
+        "AGE",
+        "REQUEST ID",
+    ];
+}
+
 pub fn write_pretty_json(mut writer: impl Write, value: &Value) -> Result<()> {
     serde_json::to_writer_pretty(&mut writer, value)?;
     writeln!(writer)?;
@@ -143,7 +187,7 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.users_json_value(users)?);
     }
-    let headers = ["NAME", "EMAIL", "SIGN-IN NAME", "JOB TITLE", "DEPARTMENT"];
+    let headers = columns::USERS;
     let rows: Vec<Vec<String>> = users
         .iter()
         .map(|user| {
@@ -156,7 +200,7 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 /// Writes people with their managers: one row per person, naming the
@@ -169,14 +213,7 @@ pub fn write_managed_users(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.managed_users_json_value(rows)?);
     }
-    let headers = [
-        "NAME",
-        "SIGN-IN NAME",
-        "ENABLED",
-        "DEPARTMENT",
-        "MANAGER",
-        "MANAGER SIGN-IN NAME",
-    ];
+    let headers = columns::MANAGED_USERS;
     let rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -197,7 +234,7 @@ pub fn write_managed_users(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 fn enabled_label(enabled: Option<bool>) -> &'static str {
@@ -216,7 +253,7 @@ pub fn write_group_memberships(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.memberships_json_value(rows)?);
     }
-    let headers = ["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
+    let headers = columns::GROUP_MEMBERSHIPS;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -229,7 +266,7 @@ pub fn write_group_memberships(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 pub fn write_skus(
@@ -240,7 +277,7 @@ pub fn write_skus(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.json_value(&skus, skus.len())?);
     }
-    let headers = ["SKU", "ID", "ASSIGNED", "ENABLED"];
+    let headers = columns::SKUS;
     let rows: Vec<Vec<String>> = skus
         .iter()
         .map(|sku| {
@@ -252,7 +289,7 @@ pub fn write_skus(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_licence_holders(
@@ -263,7 +300,7 @@ pub fn write_licence_holders(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.users_json_value(users)?);
     }
-    let headers = ["NAME", "SIGN-IN NAME", "COMPANY", "DEPARTMENT"];
+    let headers = columns::LICENCE_HOLDERS;
     let rows: Vec<Vec<String>> = users
         .iter()
         .map(|user| {
@@ -275,7 +312,7 @@ pub fn write_licence_holders(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_company_counts(
@@ -286,7 +323,7 @@ pub fn write_company_counts(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.company_counts_json_value(counts)?);
     }
-    let headers = ["COMPANY", "HOLDERS"];
+    let headers = columns::COMPANY_COUNTS;
     let rows: Vec<Vec<String>> = counts
         .iter()
         .map(|row| {
@@ -298,7 +335,7 @@ pub fn write_company_counts(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_copilot_usage(
@@ -309,14 +346,7 @@ pub fn write_copilot_usage(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.copilot_usage_json_value(rows)?);
     }
-    let headers = [
-        "NAME",
-        "SIGN-IN NAME",
-        "COMPANY",
-        "LAST ACTIVE",
-        "ACTIVE DAYS",
-        "PROMPTS",
-    ];
+    let headers = columns::COPILOT_USAGE;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -330,7 +360,7 @@ pub fn write_copilot_usage(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 pub fn write_company_usage(
@@ -341,13 +371,7 @@ pub fn write_company_usage(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.company_usage_json_value(rows)?);
     }
-    let headers = [
-        "COMPANY",
-        "USERS",
-        "ACTIVE",
-        "PROMPTS",
-        "PROMPTS PER ACTIVE USER",
-    ];
+    let headers = columns::COMPANY_USAGE;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -362,7 +386,7 @@ pub fn write_company_usage(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 /// Writes the per-app adoption summary: one row per app with its active and
@@ -381,9 +405,9 @@ pub fn write_copilot_summary(
             writer,
             "Report date {}, {} days: {} prompts, {} per active user\n",
             sanitize(summary["reportRefreshDate"].as_str().unwrap_or("unknown")),
-            adoption["reportPeriod"],
-            adoption["totalPromptsSubmitted"],
-            adoption["averagePromptsSubmitted"],
+            summary_number(&adoption["reportPeriod"]),
+            summary_number(&adoption["totalPromptsSubmitted"]),
+            summary_number(&adoption["averagePromptsSubmitted"]),
         )?;
     }
     let mut table: Vec<Vec<String>> = adoption
@@ -403,12 +427,7 @@ pub fn write_copilot_summary(
         })
         .collect();
     table.sort_by_key(|row| std::cmp::Reverse(row[1].parse::<u64>().unwrap_or(0)));
-    write_rows(
-        &mut writer,
-        options,
-        &["APP", "ACTIVE", "ENABLED", "ACTIVE %"],
-        &table,
-    )
+    write_rows(&mut writer, options, columns::COPILOT_APPS, &table)
 }
 
 /// Writes the daily trend in the order given, which the caller sorts oldest
@@ -433,12 +452,7 @@ pub fn write_copilot_trend(
             ]
         })
         .collect();
-    write_rows(
-        &mut writer,
-        options,
-        &["DATE", "ACTIVE", "ENABLED", "PROMPTS"],
-        &table,
-    )
+    write_rows(&mut writer, options, columns::COPILOT_TREND, &table)
 }
 
 pub fn write_report_settings(
@@ -457,9 +471,17 @@ pub fn write_report_settings(
     write_rows(
         &mut writer,
         options,
-        &["SETTING", "VALUE"],
+        columns::REPORT_SETTINGS,
         &[vec!["Concealed names in reports".into(), concealed.into()]],
     )
+}
+
+/// A number from the report as text, or `-` when Graph sent something else.
+fn summary_number(value: &Value) -> String {
+    match value {
+        Value::Number(number) => number.to_string(),
+        _ => "-".to_owned(),
+    }
 }
 
 fn per_user(total: u64, users: usize) -> String {
@@ -482,7 +504,7 @@ pub fn write_rows(
     headers: &[&str],
     rows: &[Vec<String>],
 ) -> Result<()> {
-    let selected = selected_indices(&options.select, headers);
+    let selected = selected_indices(&options.select, headers)?;
     let indices: Vec<usize> = selected.unwrap_or_else(|| (0..headers.len()).collect());
     if options.format == OutputFormat::Plain {
         for row in rows {
@@ -538,20 +560,29 @@ fn write_aligned<T: AsRef<str>>(
     Ok(())
 }
 
-fn selected_indices(select: &str, headers: &[&str]) -> Option<Vec<usize>> {
+/// The columns `--select` names, in its order. A name the table does not
+/// have is refused, so a typo cannot turn into a silently empty column.
+pub fn selected_indices(select: &str, headers: &[&str]) -> Result<Option<Vec<usize>>> {
     if select.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(
-        select
-            .split(',')
-            .filter_map(|field| {
-                headers
-                    .iter()
-                    .position(|header| header.eq_ignore_ascii_case(field.trim()))
-            })
-            .collect(),
-    )
+    select
+        .split(',')
+        .filter(|field| !field.trim().is_empty())
+        .map(|field| {
+            headers
+                .iter()
+                .position(|header| header.eq_ignore_ascii_case(field.trim()))
+                .ok_or_else(|| {
+                    EntraError::message(format!(
+                        "--select names no column {:?}; this output's columns are {}",
+                        field.trim(),
+                        headers.join(", ")
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 /// Unicode's Default_Ignorable_Code_Point ranges (DerivedCoreProperties.txt).
@@ -617,10 +648,16 @@ pub fn sanitize_multiline(value: &str) -> String {
         .collect()
 }
 
-fn untrusted_id() -> String {
+/// A fresh marker id. A fixed fallback would be a marker that directory text
+/// could forge, so a failure of the system's random source is an error.
+fn untrusted_id() -> Result<String> {
     let mut bytes = [0_u8; 4];
-    let _ = getrandom::fill(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes).map_err(|error| {
+        EntraError::message(format!(
+            "could not draw a random --wrap-untrusted marker: {error}"
+        ))
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn untrusted_notice(id: &str) -> String {
@@ -632,6 +669,46 @@ fn untrusted_notice(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_refuses_a_column_the_output_does_not_have() {
+        let headers = ["NAME", "EMAIL"];
+        assert_eq!(
+            selected_indices("email, name,", &headers).unwrap(),
+            Some(vec![1, 0])
+        );
+        let error = selected_indices("name,mial", &headers)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("\"mial\""), "{error}");
+        assert!(error.contains("NAME, EMAIL"), "{error}");
+    }
+
+    #[test]
+    fn copilot_summary_line_shows_only_numbers_from_graph() {
+        let summary = serde_json::json!({
+            "reportRefreshDate": "2026-11-01",
+            "adoptionByProduct": [{
+                "reportPeriod": 28,
+                "totalPromptsSubmitted": "\u{1b}[31mred",
+            }],
+        });
+        let options = OutputOptions {
+            format: OutputFormat::Table,
+            select: String::new(),
+            results_only: false,
+            wrap_untrusted: false,
+            lookup: None,
+        };
+        let mut written = Vec::new();
+        write_copilot_summary(&mut written, &options, &summary).unwrap();
+        let first = String::from_utf8(written).unwrap();
+        let first = first.lines().next().unwrap().to_owned();
+        assert_eq!(
+            first,
+            "Report date 2026-11-01, 28 days: - prompts, - per active user"
+        );
+    }
 
     #[test]
     fn terminal_sanitization_removes_control_characters() {

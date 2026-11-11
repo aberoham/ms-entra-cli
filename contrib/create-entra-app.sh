@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# SCOPES and ASSIGN_USERS are split on spaces; a wildcard in either must stay
+# a literal word, not expand to file names in the current directory.
+set -f
 
 # Creates a single-tenant public-client app registration for entra, named
 # "Entra CLI (read-only directory lookups)" unless APP_NAME says otherwise,
@@ -98,6 +101,20 @@ if [ -n "$CLIENT_ID" ]; then
   required=$(az ad sp show --id "$CLIENT_ID" --query appRoleAssignmentRequired -o tsv 2>/dev/null || true)
   [ "$required" = true ] && already_restricted=true
 fi
+
+# These values are placed into JSON bodies and JMESPath queries below, so
+# they must be exactly what they claim to be.
+uuid_pattern='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+if [ -n "${GROUP_OBJECT_ID:-}" ] && ! [[ "$GROUP_OBJECT_ID" =~ $uuid_pattern ]]; then
+  echo "error: GROUP_OBJECT_ID must be a group object id (a GUID)" >&2
+  exit 1
+fi
+for scope in $SCOPES; do
+  if ! [[ "$scope" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "error: '$scope' in SCOPES is not a permission name" >&2
+    exit 1
+  fi
+done
 
 if [ -z "${GROUP_OBJECT_ID:-}" ] &&
   [ -z "${ASSIGN_USERS:-}" ] &&
@@ -241,7 +258,7 @@ elif [ "$already_restricted" = true ]; then
 else
   echo "==> No assignment given; 'Assignment required' was left unchanged."
   echo "    On a new app that means any tenant user may sign in through it."
-  echo "    Restrict later with GROUP_OBJECT_ID=<guid> or ASSIGN_USERS=\"a@x.com b@x.com\","
+  echo "    Restrict later with GROUP_OBJECT_ID=<guid> or ASSIGN_USERS=\"alex@example.com sam@example.com\","
   echo "    or in one line per user:"
   echo "    az ad sp update --id $APP_ID --set appRoleAssignmentRequired=true"
 fi

@@ -164,7 +164,8 @@ set `SCOPES` without it when you run the setup script, and sign in without
 `securityIdentifier` and the photo. See
 [Working with users in Microsoft Graph](https://learn.microsoft.com/en-us/graph/api/resources/users).
 
-Everything else `entra user get` prints needs `User.Read.All`, including:
+Everything else `entra user get` prints, in its summary or with `--all` and
+`--group`, needs `User.Read.All`, including:
 
 ```text
 jobTitle            officeLocation      businessPhones
@@ -243,7 +244,7 @@ The script understands these variables:
 | Variable | Effect |
 |---|---|
 | `TENANT_ID` | The directory the app is created in. Falls back to `ENTRA_TENANT_ID`, then to the tenant saved by the last `entra auth login`. |
-| `CLIENT_ID` | An existing registration to update in place. Falls back to `ENTRA_CLIENT_ID`, then to the saved client ID; when none is known, the script creates or updates a registration by `APP_NAME`. |
+| `CLIENT_ID` | An existing registration to update in place. Falls back to `ENTRA_CLIENT_ID`, then to the saved client ID; when none is known, the script creates a new registration named `APP_NAME`, even if one with that name exists. |
 | `APP_NAME` | Display name; defaults to "Entra CLI (read-only directory lookups)". |
 | `SCOPES` | Space-separated scope list; defaults to every permission in the table above. |
 | `GROUP_OBJECT_ID` | Assign a group, and require assignment. |

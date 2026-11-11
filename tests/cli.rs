@@ -29,6 +29,81 @@ fn group_validation_happens_before_authentication() {
 }
 
 #[test]
+fn an_argument_clap_refuses_is_a_json_error_when_json_was_asked_for() {
+    for (args, env) in [
+        (
+            &[
+                "user",
+                "groups",
+                "a@example.test",
+                "--kind",
+                "nonsense",
+                "--json",
+            ][..],
+            None,
+        ),
+        (
+            &["reports", "copilot-trend", "--period", "D30"],
+            Some("true"),
+        ),
+    ] {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+        if let Some(value) = env {
+            command.env("ENTRA_JSON", value);
+        }
+        let output = command.args(args).assert().failure().get_output().clone();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], "CommandFailed", "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?}");
+    }
+    let mut human = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    human
+        .env_remove("ENTRA_JSON")
+        .args(["user", "groups", "a@example.test", "--kind", "nonsense"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("nonsense"));
+}
+
+#[test]
+fn an_unknown_select_column_fails_before_signing_in() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    command
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args([
+            "--no-input",
+            "user",
+            "reports",
+            "a@example.test",
+            "--select",
+            "NAME,MIAL",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--select names no column \"MIAL\"",
+        ))
+        .stderr(predicate::str::contains("NAME, EMAIL, SIGN-IN NAME"));
+    // A column the table has passes the check and goes on to sign in.
+    let mut valid = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
+    valid
+        .env("ENTRA_CONFIG_DIR", temporary.path())
+        .args([
+            "--no-input",
+            "user",
+            "reports",
+            "a@example.test",
+            "--select",
+            "email",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--select").not());
+}
+
+#[test]
 fn json_errors_stay_on_stdout() {
     let temporary = tempfile::tempdir().unwrap();
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("entra"));
