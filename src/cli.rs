@@ -2830,6 +2830,13 @@ mod tests {
             managed("Flo", Some(true), manager_json("Gus", Some(true))),
             managed("Hal", Some(true), manager_json("Ivy", None)),
             managed("Jo", Some(true), Value::Null),
+            // Graph may omit the key altogether rather than return null.
+            json!({
+                "id": fixture_id("8000", "Kit"),
+                "displayName": "Kit",
+                "userPrincipalName": "kit@example.test",
+                "accountEnabled": true,
+            }),
         ]})
     }
 
@@ -2951,6 +2958,27 @@ mod tests {
                 "{field}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn disabled_people_show_as_not_enabled_and_select_keeps_named_columns() {
+        let (_server, graph) = disabled_manager_server().await;
+        let mut plain = Vec::new();
+        let output = OutputOptions {
+            format: OutputFormat::Plain,
+            select: "name,enabled,manager sign-in name".to_string(),
+            ..json_output(false)
+        };
+        run_disabled_manager(&mut plain, &output, &graph, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(plain).unwrap(),
+            "Bo\tyes\tann@example.test\n\
+             Cy\tno\tann@example.test\n\
+             Zoe\tyes\tann@example.test\n\
+             Di\t-\ted@example.test\n"
+        );
     }
 
     #[test]
