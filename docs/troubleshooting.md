@@ -215,11 +215,12 @@ code, `CredentialLockFailed`, means the lock file itself could not be found,
 opened or locked; the message names the file and the operating-system error. Let them finish, or end a stuck one in Task Manager, then run the
 command again.
 
-## Manager lookups work but `user get` shows few fields
+## `user get` shows only a few fields
 
-You are signed in without `--directory`. `User.ReadBasic.All` returns only
-display name, given name, surname, mail, sign-in name and object ID for other
-people. Job title, office, phone numbers, `department`, `employeeId`,
+Your session lacks `User.Read.All`: you signed in with none of `--directory`,
+`--lifecycle`, `--groups`, `--licences` or `--reports`. `User.ReadBasic.All`
+returns only display name, given name, surname, mail, sign-in name and object
+ID for other people. Job title, office, phone numbers, `department`, `employeeId`,
 `accountEnabled`, `createdDateTime` and `proxyAddresses` all need
 `User.Read.All`.
 

@@ -409,9 +409,11 @@ entra auth list
 entra whoami
 ```
 
-`--directory` requests `User.Read.All` and `AuditLog.Read.All`. Without it the
-sign-in works, but only `whoami`, `user search` and the basic `user get` fields
-are available. The tool prints a reminder when you sign in without it. Extra
+`--directory` requests `User.Read.All` and `AuditLog.Read.All`. With no scope
+flags the sign-in works, but only `whoami`, `user search` and the basic
+`user get` fields are available. `--lifecycle`, `--groups`, `--licences` and
+`--reports` each bring `User.Read.All` too, which is enough for manager and
+full-profile reads but not for sign-in activity. The tool prints a reminder when you sign in without it. Extra
 scopes can be added with repeatable `--scope` flags. They merge with the
 defaults, and duplicates are removed without regard to case.
 

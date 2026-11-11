@@ -74,7 +74,7 @@ entra auth login --browser --directory \
   scope the session already holds. Sign in again to drop one.
 - `--licences` adds `LicenseAssignment.Read.All`, which `licences list` and a
   licence name in `licences holders --sku` need, together with a role such as
-  Directory Readers. A SKU id in `--sku` needs only `--directory`.
+  Directory Readers. A SKU id in `--sku` needs only `User.Read.All`.
 - `--reports` adds `Reports.Read.All` and `ReportSettings.Read.All`, which the
   `reports` commands need, together with a role such as Reports Reader or AI
   Administrator. Global Reader cannot read per-person `copilot-usage` rows.
