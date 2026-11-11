@@ -67,6 +67,8 @@ entra auth login --browser --directory \
   such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
   not evidence that nobody is leaving.
 - `--groups` adds `GroupMember.Read.All`, which `user groups` needs.
+- `--lifecycle`, `--groups`, `--licences` and `--reports` each add
+  `User.Read.All` too.
 - `auth refresh` only adds scopes: `entra auth refresh --groups` keeps every
   scope the session already holds. Sign in again to drop one.
 - `--licences` adds `LicenseAssignment.Read.All`, which `licences list` and a
