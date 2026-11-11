@@ -51,7 +51,8 @@ match, the command fails instead of choosing.";
 
 /// Long help for `--group`, which lists the valid attribute group names.
 const ATTRIBUTE_GROUP_LONG_HELP: &str = "\
-Attribute group to include. Repeat the option for several groups.
+Attribute group to include. Repeat the option for several groups. Named \
+groups win over --all. On 'user list' it needs --json.
 
 Groups: identity, addresses, organisation, location, account, credentials, \
 onpremises, signinactivity. signinactivity needs AuditLog.Read.All, a \
@@ -97,7 +98,12 @@ pub struct Cli {
         long,
         global = true,
         env = "ENTRA_PLAIN",
-        help = "Print tab-separated values with no header row"
+        help = "Print lists as tab-separated values with no header row",
+        long_help = "\
+Print lists and tables as tab-separated values with no header row, for \
+scripts. Single records keep their own form: the 'user get' summary prints \
+one 'Label: value' line per field, 'user get --all' and '--group' print JSON, \
+and the auth and version commands print sentences."
     )]
     plain: bool,
     #[arg(
@@ -196,7 +202,7 @@ data, for example before the output reaches an AI agent.
 
 Not wrapped: 'user get --all' and '--group' records, the 'user get \
 --sign-in-activity' view, and 'user list' exports made with --all, --group, \
---sign-in-activity or --manager."
+--sign-in-activity or --manager, and 'auth list'."
     )]
     wrap_untrusted: bool,
     #[command(subcommand)]
@@ -256,9 +262,10 @@ Read Microsoft 365 Copilot usage reports, and the tenant setting that \
 decides whether reports show real names.
 
 The Copilot reports need Reports.Read.All, and 'settings' needs \
-ReportSettings.Read.All. All of them need an Entra role such as Reports Reader, AI Administrator or Global Reader. Sign \
-in with 'entra auth login --reports'. They use one account: the default, or \
-the one named by --account.",
+ReportSettings.Read.All. All of them need an Entra role such as Reports \
+Reader, AI Administrator or Global Reader. Sign in with 'entra auth login \
+--reports'. They use one account: the default, or the one named by \
+--account.",
         after_help = "\
 Examples:
   entra reports copilot-usage --period D28
@@ -311,7 +318,9 @@ entra has no app registration of its own. The first sign-in needs \
 Both are saved with the account, and later sign-ins reuse them.
 
 Without scope flags you get basic profile reads. Add --directory for \
-managers, reports, chains and full records.",
+managers, direct reports, chains, full records and sign-in activity. \
+--lifecycle, --groups, --licences and --reports each add User.Read.All as \
+well as their own permission.",
         after_help = "\
 Examples:
   entra auth login --client-id <application-client-id> --tenant-id <tenant-id>
@@ -374,32 +383,32 @@ else common)"
     tenant_id: Option<String>,
     #[arg(
         long,
-        help = "Request User.Read.All and AuditLog.Read.All for managers, reports, chains \
-and full records (needs administrator consent)"
+        help = "Request User.Read.All and AuditLog.Read.All for managers, direct reports, \
+chains, full records and sign-in activity (needs administrator consent)"
     )]
     directory: bool,
     #[arg(
         long,
-        help = "Request User-LifeCycleInfo.Read.All so the employee leave date is populated \
-(needs administrator consent and a supported role)"
+        help = "Request User-LifeCycleInfo.Read.All and User.Read.All so the employee leave date \
+is populated (needs administrator consent and a supported role)"
     )]
     lifecycle: bool,
     #[arg(
         long,
-        help = "Request GroupMember.Read.All so 'user groups' can read group memberships \
-(needs administrator consent)"
+        help = "Request GroupMember.Read.All and User.Read.All so 'user groups' can read group \
+memberships (needs administrator consent)"
     )]
     groups: bool,
     #[arg(
         long,
-        help = "Request LicenseAssignment.Read.All so 'licences' can read the tenant's \
-licences (needs administrator consent and a supported role)"
+        help = "Request LicenseAssignment.Read.All and User.Read.All so 'licences' can read the \
+tenant's licences (needs administrator consent and a supported role)"
     )]
     licences: bool,
     #[arg(
         long,
-        help = "Request Reports.Read.All and ReportSettings.Read.All so 'reports' can read \
-usage reports (needs administrator consent and a supported role)"
+        help = "Request Reports.Read.All, ReportSettings.Read.All and User.Read.All so 'reports' \
+can read usage reports (needs administrator consent and a supported role)"
     )]
     reports: bool,
     #[arg(
@@ -425,22 +434,25 @@ struct AuthRefresh {
     directory: bool,
     #[arg(
         long,
-        help = "Add User-LifeCycleInfo.Read.All (needs administrator consent and a \
-supported role)"
+        help = "Add User-LifeCycleInfo.Read.All and User.Read.All (needs administrator consent \
+and a supported role)"
     )]
     lifecycle: bool,
-    #[arg(long, help = "Add GroupMember.Read.All (needs administrator consent)")]
+    #[arg(
+        long,
+        help = "Add GroupMember.Read.All and User.Read.All (needs administrator consent)"
+    )]
     groups: bool,
     #[arg(
         long,
-        help = "Add LicenseAssignment.Read.All (needs administrator consent and a \
-supported role)"
+        help = "Add LicenseAssignment.Read.All and User.Read.All (needs administrator consent \
+and a supported role)"
     )]
     licences: bool,
     #[arg(
         long,
-        help = "Add Reports.Read.All and ReportSettings.Read.All (needs administrator \
-consent and a supported role)"
+        help = "Add Reports.Read.All, ReportSettings.Read.All and User.Read.All (needs \
+administrator consent and a supported role)"
     )]
     reports: bool,
     #[arg(
@@ -686,18 +698,56 @@ enum ReportsCommand {
 Show each person's Microsoft 365 Copilot activity over the period, or totals \
 of users, active users and prompts per company with --by-company.
 
-Also needs User.Read.All, to match people to their company.",
+Needs Reports.Read.All and User.Read.All, the second to match people to \
+their company, and a role such as Reports Reader, AI Administrator or Global \
+Reader. Sign in with 'entra auth login --reports'.",
         after_help = "\
 Examples:
   entra reports copilot-usage
   entra reports copilot-usage --period D90 --by-company"
     )]
     CopilotUsage(CopilotUsageArgs),
-    #[command(about = "Active and enabled Copilot users per app")]
+    #[command(
+        about = "Active and enabled Copilot users per app",
+        long_about = "\
+Show active and enabled Microsoft 365 Copilot users per app over the period, \
+with the period's prompt totals.
+
+Needs Reports.Read.All and a role such as Reports Reader, AI Administrator or \
+Global Reader. Sign in with 'entra auth login --reports'.",
+        after_help = "\
+Examples:
+  entra reports copilot-summary
+  entra reports copilot-summary --period D90 --json"
+    )]
     CopilotSummary(CopilotPeriod),
-    #[command(about = "Daily active Copilot users and prompts")]
+    #[command(
+        about = "Daily active Copilot users and prompts",
+        long_about = "\
+Show Microsoft 365 Copilot active users and prompts for each day of the \
+period.
+
+Needs Reports.Read.All and a role such as Reports Reader, AI Administrator or \
+Global Reader. Sign in with 'entra auth login --reports'.",
+        after_help = "\
+Examples:
+  entra reports copilot-trend
+  entra reports copilot-trend --period D7 --plain"
+    )]
     CopilotTrend(CopilotPeriod),
-    #[command(about = "Show whether usage reports conceal names")]
+    #[command(
+        about = "Show whether usage reports conceal names",
+        long_about = "\
+Show whether the tenant's usage reports conceal people's names. When they \
+do, 'copilot-usage' cannot match people to their company.
+
+Needs ReportSettings.Read.All and a role such as Reports Reader, AI \
+Administrator or Global Reader. Sign in with 'entra auth login --reports'.",
+        after_help = "\
+Examples:
+  entra reports settings
+  entra reports settings --json"
+    )]
     Settings,
 }
 
@@ -825,8 +875,8 @@ struct UserGet {
     groups: Vec<String>,
     #[arg(
         long,
-        help = "Show sign-in times and ages; with --all or --group, add signInActivity to that record \
-(needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
+        help = "Show sign-in times and ages; with --all or --group, add signInActivity to that \
+record (needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
     )]
     sign_in_activity: bool,
 }
