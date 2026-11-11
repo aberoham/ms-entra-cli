@@ -51,7 +51,7 @@ act as the signed-in person, so it can never read more than that person could.
 | `User.Read` | No | `entra whoami`; every sign-in | Your own profile |
 | `offline_access` | No | Every command after the first hour | Nothing; it issues a refresh token so you do not sign in every hour |
 | `User.ReadBasic.All` | No | `entra user search`, basic `entra user get` | Display name, given name, surname, mail, sign-in name, object ID and photo for every user |
-| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
+| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, `user disabled-manager`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
 | `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
 | `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
 | `GroupMember.Read.All` | **Yes** | `entra user groups` | Every group's basic properties and its membership |

@@ -20,6 +20,7 @@ feeds the directory — not in a lookup tool.
 | `entra user chain` | `User.Read.All` |
 | `entra user groups` | `User.Read.All` and `GroupMember.Read.All` |
 | `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
+| `entra user disabled-manager` | `User.Read.All` |
 | `entra licences list` | `LicenseAssignment.Read.All`, and a role such as Directory Readers or Global Reader |
 | `entra licences holders` | `User.Read.All`; a licence name in `--sku` also needs what `licences list` needs |
 | `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader or AI Administrator (Global Reader cannot read per-person rows); `copilot-usage` also needs `User.Read.All` |
@@ -351,6 +352,41 @@ script reading it.
 
 The export is not wrapped by `--wrap-untrusted`, the same as deep `user get`
 output; the summary list is.
+
+## People whose manager is disabled
+
+```text
+entra user disabled-manager [--include-disabled]
+entra user list --disabled-manager [--include-disabled]
+```
+
+The two forms are the same check. It reads the whole directory once, with
+each person's manager expanded, and lists the people whose manager's account
+exists and is disabled (`accountEnabled` is `false`). These are the reporting
+lines that need a new manager.
+
+By default people whose own account is disabled are left out: a disabled
+person under a disabled manager usually needs no action. `--include-disabled` lists them too, and the
+`ENABLED` column tells them apart. A person whose enabled state Graph does not
+return is listed, so a gap in the data cannot hide anyone. A manager whose
+enabled state is not returned is not counted as disabled.
+
+Rows are ordered by manager, then by name, so each disabled manager's people
+sit together. The table and `--plain` columns are `NAME`, `SIGN-IN NAME`,
+`ENABLED`, `DEPARTMENT`, `MANAGER` and `MANAGER SIGN-IN NAME`. `--json` gives
+each person's summary record with a `manager` object (`id`, `displayName`,
+`userPrincipalName`, `accountEnabled`), and honours `--wrap-untrusted`.
+
+`--disabled-manager` cannot be combined with `--all`, `--group`,
+`--sign-in-activity` or `--manager`; for those, filter the export instead.
+
+```bash
+# People whose manager is disabled, leaving out disabled accounts.
+entra user disabled-manager
+
+# Each disabled manager once.
+entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
+```
 
 ## Global flags
 
