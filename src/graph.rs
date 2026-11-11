@@ -647,16 +647,18 @@ impl GraphClient {
             .append_pair("$select", &PROFILE_FIELDS.join(","))
             .append_pair("$filter", &filter)
             .append_pair("$top", "2");
-        let page: Page<User> = self.get_json(url).await?;
+        // Graph may split even two results across pages, so read until two
+        // are found or the pages run out.
+        let found: Vec<User> = self.get_all_pages(url, Some(2)).await?;
         // Two objects can hold one address, such as a guest whose mail
         // matches a member's alias; pick neither.
-        if page.value.len() > 1 {
+        if found.len() > 1 {
             return Err(EntraError::AmbiguousUser {
                 key: address.to_owned(),
-                candidates: page.value.iter().map(person_label).collect(),
+                candidates: found.iter().map(person_label).collect(),
             });
         }
-        page.value
+        found
             .into_iter()
             .next()
             .ok_or_else(|| EntraError::UserNotFound {
@@ -1257,6 +1259,9 @@ mod tests {
         assert_eq!(odata_literal("o'brien").unwrap(), "o''brien");
         assert!(odata_literal("bad\0value").is_err());
         assert!(odata_literal(&"a".repeat(MAX_QUERY_LENGTH + 1)).is_err());
+        // The bound is in bytes: 129 two-byte letters are 258 bytes.
+        let error = odata_literal(&"é".repeat(129)).unwrap_err().to_string();
+        assert!(error.contains("258 bytes of UTF-8, maximum 256"), "{error}");
     }
 
     #[test]
@@ -1271,6 +1276,39 @@ mod tests {
         );
         assert!(error.to_string().contains("AuditLog.Read.All"));
         assert!(!error.to_string().contains("lacks delegated User.Read.All"));
+    }
+
+    #[tokio::test]
+    async fn an_address_match_on_a_later_page_still_makes_it_ambiguous() {
+        let server = MockServer::start().await;
+        let address = "shared@example.test";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{address}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "Request_ResourceNotFound", "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+        let next = format!("{}/v1.0/users?page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [person("00000000-0000-4000-8000-000000000033", "First")],
+                "@odata.nextLink": next,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [person("00000000-0000-4000-8000-000000000034", "Second")],
+            })))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_user(address).await.unwrap_err();
+        assert_eq!(error.metadata().0, "AmbiguousUser", "{error}");
     }
 
     #[tokio::test]

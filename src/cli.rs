@@ -22,10 +22,10 @@ use crate::model::{
     SubscribedSku, User,
 };
 use crate::output::{
-    sanitize, sanitize_multiline, write_company_counts, write_company_usage, write_copilot_summary,
-    write_copilot_trend, write_copilot_usage, write_group_memberships, write_licence_holders,
-    write_managed_users, write_pretty_json, write_report_settings, write_rows, write_skus,
-    write_users, OutputFormat, OutputOptions,
+    columns, sanitize, sanitize_multiline, selected_indices, write_company_counts,
+    write_company_usage, write_copilot_summary, write_copilot_trend, write_copilot_usage,
+    write_group_memberships, write_licence_holders, write_managed_users, write_pretty_json,
+    write_report_settings, write_rows, write_skus, write_users, OutputFormat, OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
@@ -947,6 +947,11 @@ pub async fn execute() -> i32 {
 
 async fn run(mut cli: Cli) -> Result<()> {
     validate_command(&cli.command, cli.json)?;
+    if !cli.json {
+        if let Some(headers) = table_columns(&cli.command, cli.plain) {
+            selected_indices(&cli.select, headers)?;
+        }
+    }
     if cli.timeout == 0 {
         cli.timeout = 60;
     } else if cli.timeout > 600 {
@@ -1036,6 +1041,45 @@ fn validate_command(command: &Command, json: bool) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// The columns a command's table or `--plain` output has, so `--select` can
+/// be checked before signing in. `None` means the output is not a table and
+/// `--select` does not apply to it.
+fn table_columns(command: &Command, plain: bool) -> Option<&'static [&'static str]> {
+    match command {
+        Command::Whoami => Some(columns::USERS),
+        Command::Auth(AuthArgs {
+            command: AuthCommand::List,
+        }) => Some(columns::ACCOUNTS),
+        Command::Auth(_) | Command::Version => None,
+        Command::User(UserArgs { command }) => match command {
+            UserCommand::Get(get) => (get.sign_in_activity && !get.all && get.groups.is_empty())
+                .then_some(columns::SIGN_IN_ACTIVITY),
+            UserCommand::Manager { .. }
+            | UserCommand::Reports { .. }
+            | UserCommand::Search { .. } => Some(columns::USERS),
+            UserCommand::Chain { .. } => plain.then_some(columns::USERS),
+            UserCommand::Groups { .. } => Some(columns::GROUP_MEMBERSHIPS),
+            UserCommand::DisabledManager(_) => Some(columns::MANAGED_USERS),
+            UserCommand::List(list) if list.disabled_manager => Some(columns::MANAGED_USERS),
+            UserCommand::List(list) => (!list.is_deep()).then_some(columns::USERS),
+        },
+        Command::Licences(LicencesArgs { command }) => match command {
+            LicencesCommand::List => Some(columns::SKUS),
+            LicencesCommand::Holders(holders) if holders.by_company => {
+                Some(columns::COMPANY_COUNTS)
+            }
+            LicencesCommand::Holders(_) => Some(columns::LICENCE_HOLDERS),
+        },
+        Command::Reports(ReportsArgs { command }) => match command {
+            ReportsCommand::CopilotUsage(args) if args.by_company => Some(columns::COMPANY_USAGE),
+            ReportsCommand::CopilotUsage(_) => Some(columns::COPILOT_USAGE),
+            ReportsCommand::CopilotSummary(_) => Some(columns::COPILOT_APPS),
+            ReportsCommand::CopilotTrend(_) => Some(columns::COPILOT_TREND),
+            ReportsCommand::Settings => Some(columns::REPORT_SETTINGS),
+        },
+    }
 }
 
 /// The person a user command looks up, for the commands that take one.
@@ -1140,7 +1184,7 @@ async fn run_auth(
                     ]
                 })
                 .collect();
-            write_rows(io::stdout(), output, &["EMAIL", "NAME", "DEFAULT"], &rows)
+            write_rows(io::stdout(), output, columns::ACCOUNTS, &rows)
         }
         AuthCommand::Status => run_auth_status(cli, output, store).await,
     }
@@ -2343,18 +2387,7 @@ fn write_sign_in_activity(
         )?;
         return Ok(());
     }
-    write_rows(
-        &mut writer,
-        output,
-        &[
-            "ACTIVITY",
-            "ENTRA TIMESTAMP",
-            "AGE SECONDS",
-            "AGE",
-            "REQUEST ID",
-        ],
-        &rows,
-    )
+    write_rows(&mut writer, output, columns::SIGN_IN_ACTIVITY, &rows)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2409,7 +2442,8 @@ fn human_age(seconds: i64) -> String {
 
 /// Whether JSON output was asked for, read without clap because clap has
 /// just refused the arguments. `--json` counts only before a `--` that ends
-/// the options; `ENTRA_JSON` follows clap's reading of a boolean flag.
+/// the options. Clap accepts only `true` or `false` for `ENTRA_JSON`, so only
+/// `true` asks for JSON here.
 fn json_requested(
     args: impl IntoIterator<Item = std::ffi::OsString>,
     env: Option<std::ffi::OsString>,
@@ -2419,13 +2453,7 @@ fn json_requested(
         .skip(1)
         .take_while(|arg| arg != "--")
         .any(|arg| arg == "--json");
-    let from_env = env.is_some_and(|value| {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        !matches!(
-            value.as_str(),
-            "" | "0" | "false" | "no" | "off" | "n" | "f"
-        )
-    });
+    let from_env = env.is_some_and(|value| value == "true");
     flag || from_env
 }
 
@@ -2820,8 +2848,10 @@ mod tests {
             None
         ));
         assert!(!json_requested(args(&["--json"]), None), "program name");
-        assert!(json_requested(args(&["entra"]), Some("1".into())));
-        for falsey in ["", "0", "false", "No", "off"] {
+        assert!(json_requested(args(&["entra"]), Some("true".into())));
+        // Clap refuses anything but `true` and `false`, so none of these is
+        // a request for JSON.
+        for falsey in ["", "1", "TRUE", "false", "off"] {
             assert!(
                 !json_requested(args(&["entra"]), Some(falsey.into())),
                 "{falsey}"
@@ -4754,6 +4784,82 @@ mod tests {
         let text = String::from_utf8(written).unwrap();
         assert!(text.starts_with(concat!("entra ", env!("CARGO_PKG_VERSION"), " (commit ")));
         assert_eq!(text.lines().count(), 1);
+    }
+
+    #[test]
+    fn select_is_checked_against_the_table_each_command_prints() {
+        let columns_of = |args: &[&str], plain: bool| {
+            let cli = Cli::try_parse_from(["entra"].iter().chain(args)).unwrap();
+            table_columns(&cli.command, plain)
+        };
+        assert_eq!(
+            columns_of(&["user", "chain", "a@example.test"], false),
+            None
+        );
+        assert_eq!(
+            columns_of(&["user", "chain", "a@example.test"], true),
+            Some(columns::USERS)
+        );
+        assert_eq!(columns_of(&["user", "get", "a@example.test"], false), None);
+        assert_eq!(
+            columns_of(
+                &["user", "get", "a@example.test", "--sign-in-activity"],
+                false
+            ),
+            Some(columns::SIGN_IN_ACTIVITY)
+        );
+        assert_eq!(
+            columns_of(&["user", "list", "--disabled-manager"], false),
+            Some(columns::MANAGED_USERS)
+        );
+        assert_eq!(
+            columns_of(
+                &["licences", "holders", "--sku", "E5", "--by-company"],
+                false
+            ),
+            Some(columns::COMPANY_COUNTS)
+        );
+        assert_eq!(
+            columns_of(&["reports", "copilot-usage", "--by-company"], true),
+            Some(columns::COMPANY_USAGE)
+        );
+        assert_eq!(columns_of(&["auth", "status"], false), None);
+    }
+
+    #[test]
+    fn login_json_leaves_an_empty_display_name_empty() {
+        let info = AccountInfo {
+            email: "alex@example.test".into(),
+            display_name: String::new(),
+            tenant_id: "00000000-0000-4000-8000-000000000091".into(),
+            client_id: "00000000-0000-4000-8000-000000000092".into(),
+            login_time: "2026-11-07T12:00:00Z".into(),
+        };
+        let output = OutputOptions {
+            wrap_untrusted: true,
+            ..json_output(true)
+        };
+        assert_eq!(login_json(&output, &info).unwrap()["displayName"], "");
+    }
+
+    #[test]
+    fn sign_in_activity_fallback_follows_the_typed_permission_codes() {
+        for code in [
+            "Authorization_RequestDenied",
+            "Authentication_MSGraphPermissionMissing",
+            "Authentication_RequestFromUnsupportedUserRole",
+        ] {
+            let error = EntraError::Graph {
+                status: 403,
+                code: code.into(),
+                message: "anything".into(),
+            }
+            .context("reading requested attributes");
+            assert!(is_sign_in_activity_refusal(&error), "{code}");
+        }
+        // Wording alone, however it reads, does not trigger the fallback.
+        let worded = EntraError::message("signInActivity needs AuditLog.Read.All");
+        assert!(!is_sign_in_activity_refusal(&worded));
     }
 
     #[test]

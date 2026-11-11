@@ -181,7 +181,12 @@ impl EntraError {
     pub fn is_permission(&self) -> bool {
         match self {
             Self::Permission { .. } | Self::ReportsAccess { .. } => true,
-            Self::Graph { code, .. } => code.eq_ignore_ascii_case("Authorization_RequestDenied"),
+            // Graph names a missing delegated permission either way, the second
+            // seen on property reads such as signInActivity.
+            Self::Graph { code, .. } => {
+                code.eq_ignore_ascii_case("Authorization_RequestDenied")
+                    || code.eq_ignore_ascii_case("Authentication_MSGraphPermissionMissing")
+            }
             Self::Context { source, .. }
             | Self::SignInActivityRole { source }
             | Self::LicenceAccess { source } => source.is_permission(),

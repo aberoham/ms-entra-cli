@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- Report arguments that fail to parse as a JSON error on standard output when `--json` or `ENTRA_JSON` is set, as other argument errors already were.
+- Report arguments that fail to parse as a JSON error on standard output when `--json` is given or `ENTRA_JSON=true`, as other argument errors already were.
 - Refuse an empty `--group` name before signing in, instead of reading no attributes.
-- Refuse a `--select` column name that the table or `--plain` output does not have, listing the columns it does have. It used to print empty rows and succeed.
-- Refuse an address that two directory objects share, such as a guest whose mail matches a member's alias, with the error code `AmbiguousUser`, instead of using whichever Graph listed first.
+- Refuse a `--select` column name that the table or `--plain` output does not have, before signing in, listing the columns it does have. It used to print empty rows and succeed.
+- When a lookup searches for an address, refuse one that two directory objects share, such as a guest whose mail matches a member's alias, with the error code `AmbiguousUser`, instead of using whichever Graph listed first. A sign-in name that Graph finds directly is still used as it is.
 - Report a browser sign-in that Entra refused, such as a cancelled consent, in Entra's words instead of as a state mismatch.
 - Move the default account to another stored account when it signs out, and make the next sign-in the default when the default names no stored account.
 - Trim spaces around a person key, so a pasted object id or address is no longer searched for as a name.

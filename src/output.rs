@@ -133,6 +133,50 @@ impl OutputOptions {
     }
 }
 
+/// The columns of each table, named so `--select` can be checked against
+/// them before signing in.
+pub mod columns {
+    pub const USERS: &[&str] = &["NAME", "EMAIL", "SIGN-IN NAME", "JOB TITLE", "DEPARTMENT"];
+    pub const MANAGED_USERS: &[&str] = &[
+        "NAME",
+        "SIGN-IN NAME",
+        "ENABLED",
+        "DEPARTMENT",
+        "MANAGER",
+        "MANAGER SIGN-IN NAME",
+    ];
+    pub const GROUP_MEMBERSHIPS: &[&str] = &["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
+    pub const SKUS: &[&str] = &["SKU", "ID", "ASSIGNED", "ENABLED"];
+    pub const LICENCE_HOLDERS: &[&str] = &["NAME", "SIGN-IN NAME", "COMPANY", "DEPARTMENT"];
+    pub const COMPANY_COUNTS: &[&str] = &["COMPANY", "HOLDERS"];
+    pub const COPILOT_USAGE: &[&str] = &[
+        "NAME",
+        "SIGN-IN NAME",
+        "COMPANY",
+        "LAST ACTIVE",
+        "ACTIVE DAYS",
+        "PROMPTS",
+    ];
+    pub const COMPANY_USAGE: &[&str] = &[
+        "COMPANY",
+        "USERS",
+        "ACTIVE",
+        "PROMPTS",
+        "PROMPTS PER ACTIVE USER",
+    ];
+    pub const COPILOT_APPS: &[&str] = &["APP", "ACTIVE", "ENABLED", "ACTIVE %"];
+    pub const COPILOT_TREND: &[&str] = &["DATE", "ACTIVE", "ENABLED", "PROMPTS"];
+    pub const REPORT_SETTINGS: &[&str] = &["SETTING", "VALUE"];
+    pub const ACCOUNTS: &[&str] = &["EMAIL", "NAME", "DEFAULT"];
+    pub const SIGN_IN_ACTIVITY: &[&str] = &[
+        "ACTIVITY",
+        "ENTRA TIMESTAMP",
+        "AGE SECONDS",
+        "AGE",
+        "REQUEST ID",
+    ];
+}
+
 pub fn write_pretty_json(mut writer: impl Write, value: &Value) -> Result<()> {
     serde_json::to_writer_pretty(&mut writer, value)?;
     writeln!(writer)?;
@@ -143,7 +187,7 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.users_json_value(users)?);
     }
-    let headers = ["NAME", "EMAIL", "SIGN-IN NAME", "JOB TITLE", "DEPARTMENT"];
+    let headers = columns::USERS;
     let rows: Vec<Vec<String>> = users
         .iter()
         .map(|user| {
@@ -156,7 +200,7 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 /// Writes people with their managers: one row per person, naming the
@@ -169,14 +213,7 @@ pub fn write_managed_users(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.managed_users_json_value(rows)?);
     }
-    let headers = [
-        "NAME",
-        "SIGN-IN NAME",
-        "ENABLED",
-        "DEPARTMENT",
-        "MANAGER",
-        "MANAGER SIGN-IN NAME",
-    ];
+    let headers = columns::MANAGED_USERS;
     let rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -197,7 +234,7 @@ pub fn write_managed_users(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 fn enabled_label(enabled: Option<bool>) -> &'static str {
@@ -216,7 +253,7 @@ pub fn write_group_memberships(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.memberships_json_value(rows)?);
     }
-    let headers = ["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
+    let headers = columns::GROUP_MEMBERSHIPS;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -229,7 +266,7 @@ pub fn write_group_memberships(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 pub fn write_skus(
@@ -240,7 +277,7 @@ pub fn write_skus(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.json_value(&skus, skus.len())?);
     }
-    let headers = ["SKU", "ID", "ASSIGNED", "ENABLED"];
+    let headers = columns::SKUS;
     let rows: Vec<Vec<String>> = skus
         .iter()
         .map(|sku| {
@@ -252,7 +289,7 @@ pub fn write_skus(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_licence_holders(
@@ -263,7 +300,7 @@ pub fn write_licence_holders(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.users_json_value(users)?);
     }
-    let headers = ["NAME", "SIGN-IN NAME", "COMPANY", "DEPARTMENT"];
+    let headers = columns::LICENCE_HOLDERS;
     let rows: Vec<Vec<String>> = users
         .iter()
         .map(|user| {
@@ -275,7 +312,7 @@ pub fn write_licence_holders(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_company_counts(
@@ -286,7 +323,7 @@ pub fn write_company_counts(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.company_counts_json_value(counts)?);
     }
-    let headers = ["COMPANY", "HOLDERS"];
+    let headers = columns::COMPANY_COUNTS;
     let rows: Vec<Vec<String>> = counts
         .iter()
         .map(|row| {
@@ -298,7 +335,7 @@ pub fn write_company_counts(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &rows)
+    write_rows(&mut writer, options, headers, &rows)
 }
 
 pub fn write_copilot_usage(
@@ -309,14 +346,7 @@ pub fn write_copilot_usage(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.copilot_usage_json_value(rows)?);
     }
-    let headers = [
-        "NAME",
-        "SIGN-IN NAME",
-        "COMPANY",
-        "LAST ACTIVE",
-        "ACTIVE DAYS",
-        "PROMPTS",
-    ];
+    let headers = columns::COPILOT_USAGE;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -330,7 +360,7 @@ pub fn write_copilot_usage(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 pub fn write_company_usage(
@@ -341,13 +371,7 @@ pub fn write_company_usage(
     if options.format == OutputFormat::Json {
         return write_pretty_json(&mut writer, &options.company_usage_json_value(rows)?);
     }
-    let headers = [
-        "COMPANY",
-        "USERS",
-        "ACTIVE",
-        "PROMPTS",
-        "PROMPTS PER ACTIVE USER",
-    ];
+    let headers = columns::COMPANY_USAGE;
     let table: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -362,7 +386,7 @@ pub fn write_company_usage(
             ]
         })
         .collect();
-    write_rows(&mut writer, options, &headers, &table)
+    write_rows(&mut writer, options, headers, &table)
 }
 
 /// Writes the per-app adoption summary: one row per app with its active and
@@ -403,12 +427,7 @@ pub fn write_copilot_summary(
         })
         .collect();
     table.sort_by_key(|row| std::cmp::Reverse(row[1].parse::<u64>().unwrap_or(0)));
-    write_rows(
-        &mut writer,
-        options,
-        &["APP", "ACTIVE", "ENABLED", "ACTIVE %"],
-        &table,
-    )
+    write_rows(&mut writer, options, columns::COPILOT_APPS, &table)
 }
 
 /// Writes the daily trend in the order given, which the caller sorts oldest
@@ -433,12 +452,7 @@ pub fn write_copilot_trend(
             ]
         })
         .collect();
-    write_rows(
-        &mut writer,
-        options,
-        &["DATE", "ACTIVE", "ENABLED", "PROMPTS"],
-        &table,
-    )
+    write_rows(&mut writer, options, columns::COPILOT_TREND, &table)
 }
 
 pub fn write_report_settings(
@@ -457,7 +471,7 @@ pub fn write_report_settings(
     write_rows(
         &mut writer,
         options,
-        &["SETTING", "VALUE"],
+        columns::REPORT_SETTINGS,
         &[vec!["Concealed names in reports".into(), concealed.into()]],
     )
 }
@@ -548,7 +562,7 @@ fn write_aligned<T: AsRef<str>>(
 
 /// The columns `--select` names, in its order. A name the table does not
 /// have is refused, so a typo cannot turn into a silently empty column.
-fn selected_indices(select: &str, headers: &[&str]) -> Result<Option<Vec<usize>>> {
+pub fn selected_indices(select: &str, headers: &[&str]) -> Result<Option<Vec<usize>>> {
     if select.is_empty() {
         return Ok(None);
     }
