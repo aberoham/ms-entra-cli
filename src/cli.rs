@@ -3112,6 +3112,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn table_rows_are_sanitised_and_null_text_reads_as_empty() {
+        let mut person = managed("Bo\u{202e}x", Some(true), manager_json("Ann", Some(false)));
+        person["department"] = Value::Null;
+        person["employeeType"] = Value::Null;
+        person["manager"] = manager_json("Ann\u{1b}[31m", Some(false));
+        let (_server, graph) = listing_server(json!({"value": [person]})).await;
+        let table = OutputOptions {
+            format: OutputFormat::Table,
+            ..json_output(false)
+        };
+        let mut written = Vec::new();
+        run_disabled_manager(&mut written, &table, &graph, false)
+            .await
+            .unwrap();
+        let written = String::from_utf8(written).unwrap();
+        let mut lines = written.lines();
+        assert!(lines.next().unwrap().starts_with("NAME"), "{written}");
+        let row = lines.next().unwrap();
+        assert!(row.starts_with("Box "), "{row}");
+        assert!(row.contains("Ann[31m"), "{row}");
+        assert!(!written.contains('\u{1b}') && !written.contains('\u{202e}'));
+    }
+
+    #[tokio::test]
     async fn an_empty_result_says_so_in_table_output() {
         let (_server, graph) = listing_server(json!({"value": [
             managed("Flo", Some(true), manager_json("Gus", Some(true))),
