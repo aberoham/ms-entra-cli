@@ -184,10 +184,10 @@ a work one. All of these except `mail` and `userPrincipalName` need
 
 ## Every attribute, machine-readable
 
-`user get` defaults to a curated summary. `--all` requests every scalar
-attribute Graph exposes and returns the directory's own JSON, unmapped. Use it
-when feeding a script; it also stops an attribute the tool has no field for
-from silently vanishing.
+`user get` defaults to a curated summary. `--all` requests every
+attribute group except `signinactivity` and returns the directory's own JSON,
+unmapped. Use it when feeding a script; Graph properties the tool has no
+typed field for are kept rather than dropped.
 
 ```
 entra user get someone@example.com --all --json
