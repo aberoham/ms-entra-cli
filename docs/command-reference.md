@@ -393,8 +393,8 @@ entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable output with an envelope |
-| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; a name with no matching column is an error; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--plain` | Lists and tables as tab-separated values, no header row; the `user get` summary prints `Label: value` lines, `user get --all`/`--group` print JSON, `auth list` prints rows, and the other `auth` commands and `version` print sentences |
+| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; a name with no matching column is an error; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
 | `--timeout N` | Request timeout in seconds; 0 means 60, and values above 600 are clamped to 600 |
