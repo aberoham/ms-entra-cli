@@ -53,6 +53,8 @@ Lifecycle Workflows Administrator, Global Reader or Global Administrator.
 licence name in `licences holders --sku` need.
 `--reports` requests `Reports.Read.All` and `ReportSettings.Read.All`, which the
 `reports` commands need.
+Each of `--lifecycle`, `--groups`, `--licences` and `--reports` also requests
+`User.Read.All`.
 `auth refresh` silently redeems the selected account's stored refresh token.
 It only ever adds scopes: with no flags it keeps the stored scope set, and
 flags add their scopes to that set once the matching consent has been granted.
@@ -352,7 +354,7 @@ output; the summary list is.
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable output with an envelope |
-| `--plain` | Tab-separated values, no header row |
+| `--plain` | Lists and tables as tab-separated values, no header row; the `user get` summary prints `Label: value` lines, `user get --all`/`--group` print JSON, and `auth` and `version` print sentences |
 | `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
