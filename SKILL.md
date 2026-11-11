@@ -60,9 +60,10 @@ entra auth login --browser --directory \
   A client ID borrowed from another Graph tool signs in and then fails every
   manager lookup, because that registration was not consented for directory
   reads.
-- `--directory` requests `User.Read.All` and `AuditLog.Read.All`. Without it
-  you get a login that reads your own profile and everyone's basic details:
-  enough for `user search`, not enough for manager or sign-in-activity reads.
+- `--directory` requests `User.Read.All` and `AuditLog.Read.All`. With no
+  scope flags you get a login that reads your own profile and everyone's
+  basic details: enough for `user search`, not enough for manager or
+  sign-in-activity reads.
 - `--lifecycle` adds `User-LifeCycleInfo.Read.All`. Without it (and a role
   such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
   not evidence that nobody is leaving.
@@ -75,8 +76,8 @@ entra auth login --browser --directory \
   licence name in `licences holders --sku` need, together with a role such as
   Directory Readers. A SKU id in `--sku` needs only `--directory`.
 - `--reports` adds `Reports.Read.All` and `ReportSettings.Read.All`, which the
-  `reports` commands need, together with a role such as Reports Reader, AI
-  Administrator or Global Reader.
+  `reports` commands need, together with a role such as Reports Reader or AI
+  Administrator. Global Reader cannot read per-person `copilot-usage` rows.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.

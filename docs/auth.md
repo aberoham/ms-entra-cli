@@ -139,7 +139,8 @@ It stays outside `--directory` for the same reason as `--lifecycle`.
 The `reports` commands read Microsoft 365 usage reports. That needs
 `Reports.Read.All`, or `ReportSettings.Read.All` for `reports settings`, and,
 on the signed-in account, a role that may read usage reports, such as Reports
-Reader, AI Administrator or Global Reader. Graph refuses a missing permission
+Reader or AI Administrator (Global Reader cannot read the per-person
+`copilot-usage` report). Graph refuses a missing permission
 and a missing role the same way, with HTTP 403 and a code such as
 `S2SUnauthorized`, so the error names both. `reports copilot-usage` also reads
 every user's company, which needs `User.Read.All`. Once an administrator has

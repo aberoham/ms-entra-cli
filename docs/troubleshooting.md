@@ -39,7 +39,8 @@ the signed-in account also needs a role such as Directory Readers or Global
 Reader, or pass a SKU id to `licences holders --sku` instead of a name.
 For the `reports` commands, add `--reports`; if the token already holds
 `Reports.Read.All`, the signed-in account also needs a role such as Reports
-Reader, AI Administrator or Global Reader.
+Reader or AI Administrator. Global Reader cannot read the per-person
+`copilot-usage` report.
 
 If login succeeds and the error persists, consent was never granted, except
 for the licence and report reads, where a missing role gives the same
