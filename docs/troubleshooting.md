@@ -39,7 +39,8 @@ the signed-in account also needs a role such as Directory Readers or Global
 Reader, or pass a SKU id to `licences holders --sku` instead of a name.
 For the `reports` commands, add `--reports`; if the token already holds
 `Reports.Read.All`, the signed-in account also needs a role such as Reports
-Reader, AI Administrator or Global Reader.
+Reader or AI Administrator. Global Reader cannot read the per-person
+`copilot-usage` report.
 
 If login succeeds and the error persists, consent was never granted, except
 for the licence and report reads, where a missing role gives the same
@@ -214,11 +215,12 @@ code, `CredentialLockFailed`, means the lock file itself could not be found,
 opened or locked; the message names the file and the operating-system error. Let them finish, or end a stuck one in Task Manager, then run the
 command again.
 
-## Manager lookups work but `user get` shows few fields
+## `user get` shows only a few fields
 
-You are signed in without `--directory`. `User.ReadBasic.All` returns only
-display name, given name, surname, mail, sign-in name and object ID for other
-people. Job title, office, phone numbers, `department`, `employeeId`,
+Your session lacks `User.Read.All`: you signed in with none of `--directory`,
+`--lifecycle`, `--groups`, `--licences` or `--reports`. `User.ReadBasic.All`
+returns only display name, given name, surname, mail, sign-in name and object
+ID for other people. Job title, office, phone numbers, `department`, `employeeId`,
 `accountEnabled`, `createdDateTime` and `proxyAddresses` all need
 `User.Read.All`.
 
