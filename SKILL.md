@@ -60,21 +60,24 @@ entra auth login --browser --directory \
   A client ID borrowed from another Graph tool signs in and then fails every
   manager lookup, because that registration was not consented for directory
   reads.
-- `--directory` requests `User.Read.All` and `AuditLog.Read.All`. Without it
-  you get a login that reads your own profile and everyone's basic details:
-  enough for `user search`, not enough for manager or sign-in-activity reads.
+- `--directory` requests `User.Read.All` and `AuditLog.Read.All`. With no
+  scope flags you get a login that reads your own profile and everyone's
+  basic details: enough for `user search`, not enough for manager or
+  sign-in-activity reads.
 - `--lifecycle` adds `User-LifeCycleInfo.Read.All`. Without it (and a role
   such as Global Reader) `employeeLeaveDateTime` comes back `null`, which is
   not evidence that nobody is leaving.
 - `--groups` adds `GroupMember.Read.All`, which `user groups` needs.
+- `--lifecycle`, `--groups`, `--licences` and `--reports` each add
+  `User.Read.All` too.
 - `auth refresh` only adds scopes: `entra auth refresh --groups` keeps every
   scope the session already holds. Sign in again to drop one.
 - `--licences` adds `LicenseAssignment.Read.All`, which `licences list` and a
   licence name in `licences holders --sku` need, together with a role such as
-  Directory Readers. A SKU id in `--sku` needs only `--directory`.
+  Directory Readers. A SKU id in `--sku` needs only `User.Read.All`.
 - `--reports` adds `Reports.Read.All` and `ReportSettings.Read.All`, which the
-  `reports` commands need, together with a role such as Reports Reader, AI
-  Administrator or Global Reader.
+  `reports` commands need, together with a role such as Reports Reader or AI
+  Administrator. Global Reader cannot read per-person `copilot-usage` rows.
 - Device code is the default and shows an account picker. `--browser` also
   forces Microsoft's account picker rather than reusing the current browser
   session. Check `entra auth list` afterwards.
@@ -94,8 +97,8 @@ entra whoami                          Your own record
 entra user get <upn|email|id|name>    Full record, including every alias
 entra user get <upn|email|id|name> --sign-in-activity
                                       Focused sign-in timestamps and ages
-entra user manager <upn|email|id|name> That person's manager
-entra user reports <upn|email|id|name> Everyone reporting to them
+entra user manager <upn|email|id|name> Their direct manager (one level up)
+entra user reports <upn|email|id|name> Their direct reports (one level down only)
 entra user chain <upn|email|id|name>  Management line upwards, indented
 entra user groups <upn|email|id|name> [--kind distribution|mail-security|m365|security|other]
                                       Groups they belong to, direct or nested
@@ -129,7 +132,9 @@ only. `--manager` gives each record a `manager` object (`id`, `displayName`,
 management lines can be analysed from one export instead of a lookup per
 person.
 
-`--json`, `--plain` and `--select field,field` control output. `--json`
+`--json`, `--plain` and `--select COLUMN,COLUMN` control output. `--select`
+picks table and `--plain` columns by header name, such as `NAME,EMAIL`; it has
+no effect on `--json`. `--json`
 applies to every command, including `auth status`, whose envelope adds
 `"account"` and `"expiresAt"` so you can check sign-in before a run. Set
 `--wrap-untrusted` when output feeds a language model: display names and job
@@ -178,10 +183,10 @@ a work one. All of these except `mail` and `userPrincipalName` need
 
 ## Every attribute, machine-readable
 
-`user get` defaults to a curated summary. `--all` requests every scalar
-attribute Graph exposes and returns the directory's own JSON, unmapped. Use it
-when feeding a script; it also stops an attribute the tool has no field for
-from silently vanishing.
+`user get` defaults to a curated summary. `--all` requests every
+attribute group except `signinactivity` and returns the directory's own JSON,
+unmapped. Use it when feeding a script; Graph properties the tool has no
+typed field for are kept rather than dropped.
 
 ```
 entra user get someone@example.com --all --json

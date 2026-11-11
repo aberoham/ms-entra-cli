@@ -22,7 +22,7 @@ feeds the directory — not in a lookup tool.
 | `entra user list` | `User.Read.All`; with `--sign-in-activity`, as for `user get --sign-in-activity` |
 | `entra licences list` | `LicenseAssignment.Read.All`, and a role such as Directory Readers or Global Reader |
 | `entra licences holders` | `User.Read.All`; a licence name in `--sku` also needs what `licences list` needs |
-| `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader, AI Administrator or Global Reader; `copilot-usage` also needs `User.Read.All` |
+| `entra reports copilot-*` | `Reports.Read.All`, and a role such as Reports Reader or AI Administrator (Global Reader cannot read per-person rows); `copilot-usage` also needs `User.Read.All` |
 | `entra reports settings` | `ReportSettings.Read.All`, and a role as for `copilot-*` |
 | `entra auth *` | none beyond sign-in |
 
@@ -42,8 +42,11 @@ Login takes the client ID from `--client-id` or `ENTRA_CLIENT_ID`, and the
 tenant ID from `--tenant-id` or `ENTRA_TENANT_ID`. Without them it reuses the
 registration saved at an earlier login (see
 [auth.md](auth.md#sign-in)), so only the first sign-in needs them. `--directory` requests
-`User.Read.All` and `AuditLog.Read.All`; without it, manager, reporting-line and
-sign-in-activity lookups will not work. Sign-in activity additionally requires
+`User.Read.All` and `AuditLog.Read.All`. With no scope flags, manager,
+reporting-line and sign-in-activity lookups will not work; `--lifecycle`,
+`--groups`, `--licences` and `--reports` also bring `User.Read.All`, enough for
+manager and reporting-line lookups but not for sign-in activity, which needs
+`AuditLog.Read.All` from `--directory`. Sign-in activity additionally requires
 an eligible licence and a supported role on the signed-in account.
 `--lifecycle` requests `User-LifeCycleInfo.Read.All`, without which Graph
 returns every employee leave date as `null`; the signed-in account also needs
@@ -53,6 +56,8 @@ Lifecycle Workflows Administrator, Global Reader or Global Administrator.
 licence name in `licences holders --sku` need.
 `--reports` requests `Reports.Read.All` and `ReportSettings.Read.All`, which the
 `reports` commands need.
+Each of `--lifecycle`, `--groups`, `--licences` and `--reports` also requests
+`User.Read.All`.
 `auth refresh` silently redeems the selected account's stored refresh token.
 It only ever adds scopes: with no flags it keeps the stored scope set, and
 flags add their scopes to that set once the matching consent has been granted.
@@ -204,8 +209,12 @@ whether two addresses are one mailbox or two. Mailbox addresses
 because the second kind usually delivers somewhere else entirely. Entra has no
 `primaryEmail`/`secondaryEmail` pair; see [auth.md](auth.md#there-is-no-primaryemail-or-secondaryemail).
 
-`user chain` walks upwards from the named person, stopping at the top of the
-line, at `--depth`, or on a cycle. Directories do contain cycles: somebody
+`user manager` goes one level up and `user reports` one level down: it lists
+direct reports only. `user chain` walks upwards from the named person, stopping
+at the top of the line, at `--depth`, or on a cycle. `--depth` counts the
+starting person, who is the first entry, so `--depth 1` shows only them;
+`--depth 0` means the default of 10. No command walks the tree downwards; to
+build one, export everyone with `entra user list --manager --json`. Directories do contain cycles: somebody
 recorded as their own manager, or a pair pointing at each other.
 
 `user search` matches a prefix of display name, mail, sign-in name or surname.
@@ -242,8 +251,8 @@ than printing a list of nameless groups.
 ### Deep inspection
 
 `user get` has two modes. By default it prints a curated summary. With
-`--all` it requests every scalar attribute Graph exposes and returns the
-directory's own JSON, unmapped:
+`--all` it requests the attributes of every attribute group below except
+`signinactivity`, and returns them as unmapped Graph JSON:
 
 ```bash
 entra user get someone@example.com --all --json
@@ -315,7 +324,7 @@ only; any of them without `--json` is rejected before signing in.
 
 | Flag | Adds |
 |---|---|
-| `--all` | Every attribute in the groups above |
+| `--all` | Every attribute in the groups above except `signinactivity` |
 | `--group GROUP` | Only these groups (repeatable; wins over `--all`) |
 | `--sign-in-activity` | `signInActivity`, alongside the summary fields when used alone |
 | `--manager` | A `manager` object on every record: `id`, `displayName`, `userPrincipalName` and `accountEnabled`, or `null` when none is recorded |
@@ -348,13 +357,14 @@ output; the summary list is.
 | Flag | Effect |
 |---|---|
 | `--json` | Machine-readable output with an envelope |
-| `--plain` | Tab-separated, no header decoration |
-| `--select field,field` | Restrict output to named fields |
+| `--plain` | Lists and tables as tab-separated values, no header row; the `user get` summary prints `Label: value` lines, `user get --all`/`--group` print JSON, `auth list` prints rows, and the other `auth` commands and `version` print sentences |
+| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
-| `--timeout N` | Request timeout in seconds, clamped to 600 |
+| `--timeout N` | Request timeout in seconds; 0 means 60, and values above 600 are clamped to 600 |
 | `--verbose` | Underlying request detail on stderr |
-| `--no-write` | Refuse any mutating operation |
+| `--color auto\|never\|always` | Accepted for compatibility; output is not coloured |
+| `--no-write` | Refuse any mutating operation; every command is read-only today |
 | `--no-input` | Fail rather than prompt; use in automation |
 | `--wrap-untrusted` | Mark directory free-text as untrusted content |
 
@@ -378,11 +388,11 @@ is not a trusted source of instructions.
 # Who does someone report to?
 entra user manager jane.doe@example.com
 
-# The whole line up to the top.
+# The management line upwards.
 entra user chain jane.doe@example.com
 
 # Is this address an alias of that one?
-entra user get shared-inbox@example.com --json --select proxyAddresses
+entra user get shared-inbox@example.com --group addresses --json
 
 # Everyone reporting to a manager, tab-separated.
 entra user reports manager@example.com --plain
