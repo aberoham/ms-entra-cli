@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Rewrite the help for every command and subcommand, with usage examples throughout. `user manager`, `user reports` and `user chain` now say which way each one looks: one level up, one level down, or the whole line upwards. Rarely used global options move under `Global Options` and appear only in `--help`, not `-h`.
+
 ## v0.4.1 - 2026-11-07
 
 - Make `auth login`, `auth logout`, `auth status` and `version` honour `--json`. `auth status` returns the signed-in profile with the account and the access token's expiry; `auth login` moves its `--directory` note to standard error in JSON mode.

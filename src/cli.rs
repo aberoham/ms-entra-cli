@@ -779,7 +779,7 @@ struct UserGet {
     groups: Vec<String>,
     #[arg(
         long,
-        help = "Show sign-in times and ages; with --all or --group, add them to that record \
+        help = "Show sign-in times and ages; with --all or --group, add signInActivity to that record \
 (needs AuditLog.Read.All, a supported Entra role, and P1/P2)"
     )]
     sign_in_activity: bool,

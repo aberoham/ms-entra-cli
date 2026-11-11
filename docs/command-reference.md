@@ -319,7 +319,7 @@ only; any of them without `--json` is rejected before signing in.
 
 | Flag | Adds |
 |---|---|
-| `--all` | Every attribute in the groups above |
+| `--all` | Every attribute in the groups above except `signinactivity` |
 | `--group GROUP` | Only these groups (repeatable; wins over `--all`) |
 | `--sign-in-activity` | `signInActivity`, alongside the summary fields when used alone |
 | `--manager` | A `manager` object on every record: `id`, `displayName`, `userPrincipalName` and `accountEnabled`, or `null` when none is recorded |
