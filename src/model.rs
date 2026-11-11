@@ -532,9 +532,60 @@ impl User {
             &mut out.department,
             &mut out.company_name,
             &mut out.office_location,
+            &mut out.employee_type,
         ] {
             if !value.is_empty() {
                 *value = format!("[UNTRUSTED:{id}]{value}[/UNTRUSTED:{id}]");
+            }
+        }
+        out
+    }
+}
+
+/// The manager Graph expands onto a user record: enough to name the manager
+/// and to tell whether their account is still enabled.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerSummary {
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub id: String,
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub display_name: String,
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub user_principal_name: String,
+    #[serde(default)]
+    pub account_enabled: Option<bool>,
+}
+
+/// A user's summary profile with their manager, `None` when the directory
+/// records no manager.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedUser {
+    #[serde(flatten)]
+    pub user: User,
+    #[serde(default)]
+    pub manager: Option<ManagerSummary>,
+}
+
+impl ManagedUser {
+    /// True when the manager's account exists and is disabled. A manager
+    /// whose enabled state Graph did not return is not counted.
+    pub fn has_disabled_manager(&self) -> bool {
+        self.manager
+            .as_ref()
+            .is_some_and(|manager| manager.account_enabled == Some(false))
+    }
+
+    pub fn wrap_untrusted(&self, id: &str) -> Self {
+        let mut out = Self {
+            user: self.user.wrap_untrusted(id),
+            manager: self.manager.clone(),
+        };
+        if let Some(manager) = &mut out.manager {
+            if !manager.display_name.is_empty() {
+                manager.display_name =
+                    format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", manager.display_name);
             }
         }
         out

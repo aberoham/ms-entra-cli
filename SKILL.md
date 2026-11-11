@@ -103,6 +103,10 @@ entra user search <query> [-n 25]     Find people by name or address prefix
 entra user list                       Everyone in the directory
 entra user list --all --manager --json
                                       Every record and its manager, for scripts
+entra user disabled-manager [--include-disabled]
+                                      People whose manager is disabled; leaves
+                                      out disabled people unless asked
+                                      (also: user list --disabled-manager)
 entra licences list                   Tenant licences: name, SKU id, assigned, enabled
 entra licences holders --sku <name|sku-id> [--by-company]
                                       Who holds a licence, or holders per company

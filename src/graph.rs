@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::error::{EntraError, Result};
-use crate::model::{Group, Page, ReportSettings, SubscribedSku, User};
+use crate::model::{Group, ManagedUser, Page, ReportSettings, SubscribedSku, User};
 use crate::output::sanitize;
 
 pub const GRAPH_V1: &str = "https://graph.microsoft.com/v1.0/";
@@ -463,6 +463,19 @@ impl GraphClient {
                 error.permission("list directory users")
             } else {
                 error.context("listing directory users")
+            }
+        })
+    }
+
+    /// Lists every user's summary profile with their manager expanded, in
+    /// one paged read.
+    pub async fn list_users_with_managers(&self) -> Result<Vec<ManagedUser>> {
+        let url = self.list_url(PROFILE_FIELDS, Some(MANAGER_EXPANSION))?;
+        self.get_all_pages(url, None).await.map_err(|error| {
+            if error.is_permission() {
+                error.permission("list directory users and their managers")
+            } else {
+                error.context("listing directory users and their managers")
             }
         })
     }

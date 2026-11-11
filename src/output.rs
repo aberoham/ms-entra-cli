@@ -5,7 +5,8 @@ use serde_json::Value;
 
 use crate::error::Result;
 use crate::model::{
-    CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ReportSettings, SubscribedSku, User,
+    CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ReportSettings,
+    SubscribedSku, User,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,10 @@ impl OutputOptions {
 
     pub fn users_json_value(&self, users: &[User]) -> Result<Value> {
         self.wrapped_rows_json_value(users, User::wrap_untrusted)
+    }
+
+    pub fn managed_users_json_value(&self, rows: &[ManagedUser]) -> Result<Value> {
+        self.wrapped_rows_json_value(rows, ManagedUser::wrap_untrusted)
     }
 
     pub fn memberships_json_value(&self, rows: &[GroupMembership]) -> Result<Value> {
@@ -152,6 +157,55 @@ pub fn write_users(mut writer: impl Write, options: &OutputOptions, users: &[Use
         })
         .collect();
     write_rows(&mut writer, options, &headers, &rows)
+}
+
+/// Writes people with their managers: one row per person, naming the
+/// manager beside them.
+pub fn write_managed_users(
+    mut writer: impl Write,
+    options: &OutputOptions,
+    rows: &[ManagedUser],
+) -> Result<()> {
+    if options.format == OutputFormat::Json {
+        return write_pretty_json(&mut writer, &options.managed_users_json_value(rows)?);
+    }
+    let headers = [
+        "NAME",
+        "SIGN-IN NAME",
+        "ENABLED",
+        "DEPARTMENT",
+        "MANAGER",
+        "MANAGER SIGN-IN NAME",
+    ];
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let (manager_name, manager_sign_in) =
+                row.manager.as_ref().map_or(("", ""), |manager| {
+                    (
+                        manager.display_name.as_str(),
+                        manager.user_principal_name.as_str(),
+                    )
+                });
+            vec![
+                sanitize(&row.user.display_name),
+                sanitize(&row.user.user_principal_name),
+                enabled_label(row.user.account_enabled).into(),
+                sanitize(&row.user.department),
+                sanitize(manager_name),
+                sanitize(manager_sign_in),
+            ]
+        })
+        .collect();
+    write_rows(&mut writer, options, &headers, &rows)
+}
+
+fn enabled_label(enabled: Option<bool>) -> &'static str {
+    match enabled {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "-",
+    }
 }
 
 pub fn write_group_memberships(

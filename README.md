@@ -12,6 +12,7 @@ entra user get shared-inbox@example.com   # every alias, primary marked
 entra user groups jane.doe@example.com --kind distribution
 entra user search "jane"
 entra user list --manager --json          # everyone, with their managers
+entra user disabled-manager               # people whose manager is disabled
 entra licences holders --sku SPE_E5 --by-company
 entra reports copilot-usage --by-company   # Copilot use per company
 ```
