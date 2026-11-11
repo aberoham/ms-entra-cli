@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Refuse a `--select` column name that the table or `--plain` output does not have, listing the columns it does have. It used to print empty rows and succeed.
+- Refuse an address that two directory objects share, such as a guest whose mail matches a member's alias, with the error code `AmbiguousUser`, instead of using whichever Graph listed first.
+- Report a browser sign-in that Entra refused, such as a cancelled consent, in Entra's words instead of as a state mismatch.
+- Move the default account to another stored account when it signs out, and make the next sign-in the default when the default names no stored account.
+- Trim spaces around a person key, so a pasted object id or address is no longer searched for as a name.
+- Retry a Graph response whose body is cut off part way, as a failed connection already was.
 - Add `entra user disabled-manager`, and the same check as `entra user list --disabled-manager`, listing everyone whose manager's account is disabled, grouped by manager. People whose own account is disabled are left out unless `--include-disabled` is given. It needs `User.Read.All`, as `user list` does.
 - Make `--wrap-untrusted` also mark `employeeType`, which is free text set in the directory.
 

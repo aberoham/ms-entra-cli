@@ -632,6 +632,14 @@ impl GraphClient {
             .append_pair("$filter", &filter)
             .append_pair("$top", "2");
         let page: Page<User> = self.get_json(url).await?;
+        // Two objects can hold one address, such as a guest whose mail
+        // matches a member's alias; pick neither.
+        if page.value.len() > 1 {
+            return Err(EntraError::AmbiguousUser {
+                key: address.to_owned(),
+                candidates: page.value.iter().map(person_label).collect(),
+            });
+        }
         page.value
             .into_iter()
             .next()
@@ -826,16 +834,19 @@ impl GraphClient {
                     )));
                 }
             }
-            let mut response = response;
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await? {
-                if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-                    return Err(EntraError::message(format!(
-                        "Graph response is too large (more than {MAX_RESPONSE_BYTES} bytes)"
-                    )));
+            let body = match read_bounded_body(response).await {
+                Ok(body) => body,
+                // A connection that drops part way through a body is as
+                // transient as one that fails before the headers.
+                Err(EntraError::Http(error))
+                    if attempt < MAX_ATTEMPTS
+                        && (error.is_timeout() || error.is_body() || error.is_decode()) =>
+                {
+                    sleep(Duration::from_millis(250 << (attempt - 1))).await;
+                    continue;
                 }
-                body.extend_from_slice(&chunk);
-            }
+                Err(error) => return Err(error),
+            };
             if status.is_success() {
                 return Ok(body);
             }
@@ -850,6 +861,20 @@ impl GraphClient {
         }
         Err(EntraError::message("Graph request exhausted its retries"))
     }
+}
+
+/// Reads a response body, refusing one larger than `MAX_RESPONSE_BYTES`.
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(EntraError::message(format!(
+                "Graph response is too large (more than {MAX_RESPONSE_BYTES} bytes)"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Gives every listed record an explicit `manager` value. Graph omits the key
@@ -881,7 +906,7 @@ fn attribute_permission(error: EntraError, properties: &[&str]) -> EntraError {
 pub fn odata_literal(value: &str) -> Result<String> {
     if value.len() > MAX_QUERY_LENGTH {
         return Err(EntraError::message(format!(
-            "query is too long ({} characters, maximum {MAX_QUERY_LENGTH})",
+            "query is too long ({} bytes of UTF-8, maximum {MAX_QUERY_LENGTH})",
             value.len()
         )));
     }
@@ -916,6 +941,39 @@ mod tests {
         GraphClient::new("test-token", Duration::from_secs(2), false)
             .unwrap()
             .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_body_cut_off_part_way_is_retried() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body =
+            json!({"id": "00000000-0000-4000-8000-000000000051", "displayName": "Al"}).to_string();
+        let server = tokio::spawn(async move {
+            for complete in [false, true] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 4096];
+                let _ = stream.read(&mut request).await.unwrap();
+                let sent = if complete { body.len() } else { body.len() / 2 };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    &body[..sent]
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), false)
+            .unwrap()
+            .with_base_url(Url::parse(&format!("http://{address}/v1.0/")).unwrap());
+        let user = graph
+            .get_user("00000000-0000-4000-8000-000000000051")
+            .await
+            .unwrap();
+        assert_eq!(user.display_name, "Al");
+        server.await.unwrap();
     }
 
     fn person(id: &str, name: &str) -> Value {
@@ -1158,6 +1216,35 @@ mod tests {
         );
         assert!(error.to_string().contains("AuditLog.Read.All"));
         assert!(!error.to_string().contains("lacks delegated User.Read.All"));
+    }
+
+    #[tokio::test]
+    async fn an_address_held_by_two_objects_is_ambiguous() {
+        let server = MockServer::start().await;
+        let address = "shared@example.test";
+        Mock::given(method("GET"))
+            .and(path(format!("/v1.0/users/{address}")))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "Request_ResourceNotFound", "message": "not found"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "00000000-0000-4000-8000-000000000031", "displayName": "Member",
+                 "userPrincipalName": "member@example.test"},
+                {"id": "00000000-0000-4000-8000-000000000032", "displayName": "Guest",
+                 "userPrincipalName": "guest#EXT#@example.test"},
+            ]})))
+            .mount(&server)
+            .await;
+        let error = client(&server).await.get_user(address).await.unwrap_err();
+        assert_eq!(error.metadata().0, "AmbiguousUser", "{error}");
+        let message = error.to_string();
+        assert!(message.contains("member@example.test"), "{message}");
+        assert!(message.contains("guest#EXT#@example.test"), "{message}");
     }
 
     #[tokio::test]

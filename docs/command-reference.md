@@ -170,8 +170,8 @@ entra user search <query> [-n 25]
 ```
 
 Any of a person's sign-in name, primary email address or object id is accepted.
-A direct lookup that misses is retried as a search over `mail` and
-`proxyAddresses`, so either address form works. Deep reads recognise an
+A direct lookup that misses is retried as a search over `mail`,
+`userPrincipalName` and `proxyAddresses`, so either address form works. Deep reads recognise an
 address-shaped key and resolve it before requesting attributes, because Graph
 requires an immutable object id for some projections such as
 `signInActivity`. Callers never need to resolve or paste that id themselves.
@@ -389,7 +389,7 @@ entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
 |---|---|
 | `--json` | Machine-readable output with an envelope |
 | `--plain` | Tab-separated values, no header row |
-| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
+| `--select COLUMN,COLUMN` | Show only these table or `--plain` columns, by header name such as `NAME,EMAIL`; a name with no matching column is an error; no effect on `--json`, the `user chain` tree, or the `user get` record and its `--all`/`--group` views |
 | `--results-only` | Drop the JSON envelope, leaving the result value |
 | `--account ADDRESS` | Pin execution to a stored identity, selected by primary email, UPN or proxy address |
 | `--timeout N` | Request timeout in seconds; 0 means 60, and values above 600 are clamped to 600 |

@@ -84,7 +84,7 @@ The address does not resolve. Two common causes, in order of likelihood:
    email address differ frequently — one person signs in as
    `alex.smith@login.example.test` and receives mail at
    `alex.smith@example.test`. `entra` already retries a direct miss as a
-   search over `mail` and `proxyAddresses`, so a genuine failure here usually
+   search over `mail`, `userPrincipalName` and `proxyAddresses`, so a genuine failure here usually
    means neither form is right. Try `entra user search <surname>`.
 2. **The account no longer exists.** People who leave are removed from the
    directory, but can remain in other systems that were never updated. If you
@@ -224,8 +224,9 @@ people. Job title, office, phone numbers, `department`, `employeeId`,
 
 ## `query is too long` or `query contains a control character`
 
-Input to `user search` and `user get` is bounded at 256 characters and rejects
-control characters, so that malformed input fails locally with a clear message
+A person key or search text, as given to the `user` commands and to
+`licences holders --sku`, is bounded at 256 bytes of UTF-8 (fewer characters
+when it holds non-ASCII letters) and rejects control characters, so that malformed input fails locally with a clear message
 rather than becoming an opaque Graph error. Shorten the query.
 
 ## macOS keychain prompts after every upgrade

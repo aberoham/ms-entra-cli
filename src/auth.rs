@@ -789,19 +789,7 @@ async fn receive_callback(listener: TcpListener, expected_state: &str) -> Result
         .ok_or_else(|| EntraError::message("browser callback was not a valid HTTP request"))?;
     let callback = Url::parse(&format!("http://localhost{target}"))?;
     let query: std::collections::HashMap<_, _> = callback.query_pairs().into_owned().collect();
-    let result = match (query.get("state"), query.get("code"), query.get("error")) {
-        (Some(state), Some(code), _) if state == expected_state => Ok(code.clone()),
-        (Some(_), _, _) => Err(EntraError::message(
-            "browser callback state did not match; refusing the authorization response",
-        )),
-        (_, _, Some(error)) => Err(EntraError::message(format!(
-            "browser authentication failed: {error}: {}",
-            query.get("error_description").cloned().unwrap_or_default()
-        ))),
-        _ => Err(EntraError::message(
-            "browser callback did not contain an authorization code",
-        )),
-    };
+    let result = callback_result(&query, expected_state);
     let (status, body) = if result.is_ok() {
         (
             "200 OK",
@@ -819,6 +807,30 @@ async fn receive_callback(listener: TcpListener, expected_state: &str) -> Result
     );
     stream.write_all(response.as_bytes()).await?;
     result
+}
+
+/// Reads the authorization response from the callback's query. Entra returns
+/// `state` on errors as well as on success, so the state is checked first and
+/// an error is reported in Entra's own words only when the state matches.
+fn callback_result(
+    query: &std::collections::HashMap<String, String>,
+    expected_state: &str,
+) -> Result<String> {
+    if query.get("state").map(String::as_str) != Some(expected_state) {
+        return Err(EntraError::message(
+            "browser callback state did not match; refusing the authorization response",
+        ));
+    }
+    match (query.get("code"), query.get("error")) {
+        (Some(code), None) => Ok(code.clone()),
+        (_, Some(error)) => Err(EntraError::message(format!(
+            "browser authentication failed: {error}: {}",
+            query.get("error_description").map_or("", String::as_str)
+        ))),
+        (None, None) => Err(EntraError::message(
+            "browser callback did not contain an authorization code",
+        )),
+    }
 }
 
 fn generate_pkce() -> Result<(String, String)> {
@@ -942,6 +954,55 @@ mod tests {
     use crate::secrets::test_support::MemoryStore;
 
     use super::*;
+
+    fn callback(pairs: &[(&str, &str)]) -> Result<String> {
+        let query = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        callback_result(&query, "expected")
+    }
+
+    #[test]
+    fn a_callback_error_with_the_right_state_reports_entras_reason() {
+        let error = callback(&[
+            ("state", "expected"),
+            ("error", "access_denied"),
+            ("error_description", "The user cancelled."),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("access_denied: The user cancelled."),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_callback_without_the_right_state_is_refused_whatever_it_holds() {
+        for pairs in [
+            &[("state", "other"), ("code", "abc")][..],
+            &[("state", "other"), ("error", "access_denied")],
+            &[("error", "access_denied")],
+            &[("code", "abc")],
+        ] {
+            let error = callback(pairs).unwrap_err().to_string();
+            assert!(error.contains("state did not match"), "{pairs:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_callback_with_the_right_state_returns_its_code() {
+        assert_eq!(
+            callback(&[("state", "expected"), ("code", "abc")]).unwrap(),
+            "abc"
+        );
+        let error = callback(&[("state", "expected")]).unwrap_err().to_string();
+        assert!(
+            error.contains("did not contain an authorization code"),
+            "{error}"
+        );
+    }
 
     struct FailingWriteStore {
         value: String,

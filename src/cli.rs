@@ -29,6 +29,12 @@ use crate::output::{
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
+/// Drops the spaces a paste often carries, so a pasted object id or address
+/// is still recognised as one rather than searched for as a name.
+fn person_key_arg(value: &str) -> std::result::Result<String, String> {
+    Ok(value.trim().to_owned())
+}
+
 /// Short help for the person argument of the single-person user commands.
 const PERSON_HELP: &str = "Sign-in name, email address or alias, object id, or name";
 
@@ -143,7 +149,8 @@ default account only."
         help = "Show only these columns of a table or --plain list, such as NAME,EMAIL",
         long_help = "\
 Show only these columns of a table or --plain list, in this order, by their \
-header names, such as NAME,EMAIL or \"NAME,SIGN-IN NAME\". Case is ignored.
+header names, such as NAME,EMAIL or \"NAME,SIGN-IN NAME\". Case is ignored. \
+A name the output has no column for is an error that lists its columns.
 
 It has no effect on --json output, on the 'user chain' tree, or on the \
 'user get' record and its --all or --group views. It does apply to the \
@@ -493,7 +500,7 @@ Examples:
   entra user manager jane.doe@example.com --json"
     )]
     Manager {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
     },
     #[command(
@@ -511,7 +518,7 @@ Examples:
   entra user reports jane.doe@example.com --plain --select NAME,EMAIL"
     )]
     Reports {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
     },
     #[command(
@@ -530,7 +537,7 @@ Examples:
   entra user chain jane.doe@example.com --json"
     )]
     Chain {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
         #[arg(
             long,
@@ -555,7 +562,7 @@ Examples:
   entra user groups jane.doe@example.com --kind distribution"
     )]
     Groups {
-        #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+        #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
         key: String,
         #[arg(long, value_enum, help = "Show only groups of this kind")]
         kind: Option<GroupKind>,
@@ -808,7 +815,7 @@ struct DisabledManagerArgs {
 
 #[derive(Debug, Clone, Args)]
 struct UserGet {
-    #[arg(value_name = "UPN|EMAIL|ID|NAME", help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
+    #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
     key: String,
     #[arg(
         long,
@@ -1010,6 +1017,13 @@ async fn run_auth(
             let email = account.email;
             let auth = Authenticator::new(store, "", DEFAULT_TENANT_ID)?;
             auth.logout(&email)?;
+            if config.default_account.eq_ignore_ascii_case(&email) {
+                let mut config = config;
+                config.default_account = next_default_account(auth.list_accounts()?, &email);
+                config
+                    .save()
+                    .map_err(|error| error.context("saving config"))?;
+            }
             if output.format == OutputFormat::Json {
                 let result = json!({"account": email, "signedOut": true});
                 return write_pretty_json(io::stdout(), &output.json_value(&result, 1)?);
@@ -1180,7 +1194,10 @@ async fn run_login(
             tenant_id,
         },
     );
-    if config.default_account.is_empty() {
+    // A default left behind by an account that was signed out names nobody,
+    // so the account just signed in replaces it.
+    let accounts = crate::auth::list_accounts()?;
+    if !is_stored_account(&config.default_account, &accounts) {
         config.default_account = info.email.clone();
     }
     config
@@ -1228,10 +1245,11 @@ fn login_json(output: &OutputOptions, info: &AccountInfo) -> Result<Value> {
 
 impl LoginResult {
     fn wrap_untrusted(&self, id: &str) -> Self {
-        Self {
-            display_name: format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", self.display_name),
-            ..self.clone()
+        let mut out = self.clone();
+        if !out.display_name.is_empty() {
+            out.display_name = format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", out.display_name);
         }
+        out
     }
 }
 
@@ -2029,6 +2047,23 @@ async fn resolve_account_identifier(
     }
 }
 
+fn is_stored_account(email: &str, accounts: &[AccountInfo]) -> bool {
+    !email.is_empty()
+        && accounts
+            .iter()
+            .any(|account| account.email.eq_ignore_ascii_case(email))
+}
+
+/// The default after `signed_out` signs out: the first remaining account in
+/// address order, or none.
+fn next_default_account(accounts: Vec<AccountInfo>, signed_out: &str) -> String {
+    ordered_accounts(accounts, "")
+        .into_iter()
+        .map(|account| account.email)
+        .find(|email| !email.eq_ignore_ascii_case(signed_out))
+        .unwrap_or_default()
+}
+
 fn ordered_accounts(mut accounts: Vec<AccountInfo>, default_account: &str) -> Vec<AccountInfo> {
     accounts.sort_by(|left, right| {
         left.email
@@ -2453,6 +2488,31 @@ mod tests {
     }
 
     #[test]
+    fn signing_out_the_default_moves_it_to_a_remaining_account() {
+        let remaining = || vec![account("zed@example.test"), account("amy@example.test")];
+        assert_eq!(
+            next_default_account(remaining(), "bob@example.test"),
+            "amy@example.test"
+        );
+        // The store may still list the account while it is being removed.
+        let mut with_self = remaining();
+        with_self.push(account("Bob@example.test"));
+        assert_eq!(
+            next_default_account(with_self, "bob@example.test"),
+            "amy@example.test"
+        );
+        assert_eq!(next_default_account(Vec::new(), "bob@example.test"), "");
+    }
+
+    #[test]
+    fn a_default_naming_no_stored_account_is_replaced_at_sign_in() {
+        let accounts = [account("Amy@example.test")];
+        assert!(is_stored_account("amy@example.test", &accounts));
+        assert!(!is_stored_account("gone@example.test", &accounts));
+        assert!(!is_stored_account("", &accounts));
+    }
+
+    #[test]
     fn global_flags_are_accepted_after_the_leaf_command() {
         let cli = Cli::try_parse_from([
             "entra",
@@ -2640,6 +2700,20 @@ mod tests {
                 .tenant_id,
             DEFAULT_TENANT_ID
         );
+    }
+
+    #[test]
+    fn a_pasted_object_id_with_spaces_is_still_an_object_id() {
+        let id = "00000000-0000-4000-8000-000000000041";
+        for command in ["get", "manager", "reports", "chain", "groups"] {
+            let cli = Cli::try_parse_from(["entra", "user", command, &format!(" {id}\t")]).unwrap();
+            let Command::User(UserArgs { command }) = cli.command else {
+                panic!("not a user command");
+            };
+            let key = person_key(&command).unwrap();
+            assert_eq!(key, id, "{command:?}");
+            assert!(!is_name_key(key));
+        }
     }
 
     fn user_list(args: &[&str]) -> UserList {

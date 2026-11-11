@@ -3,8 +3,9 @@
 # keychain "Always Allow" grants persist across rebuilds and upgrades.
 #
 # Why this is needed: macOS ties a keychain authorisation to the *identity of
-# the program* that asked for it. `cargo build` and Homebrew both produce an
-# ad-hoc-signed binary whose identity changes with every build, so the system
+# the program* that asked for it. `cargo build`, and Homebrew releases before
+# v0.1.1, produce an ad-hoc-signed binary whose identity changes with every
+# build, so the system
 # correctly treats each new binary as a different program and asks again.
 # Signing with one stable certificate makes the grant stick.
 #

@@ -3,7 +3,7 @@ use std::io::Write;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::error::Result;
+use crate::error::{EntraError, Result};
 use crate::model::{
     CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ReportSettings,
     SubscribedSku, User,
@@ -381,9 +381,9 @@ pub fn write_copilot_summary(
             writer,
             "Report date {}, {} days: {} prompts, {} per active user\n",
             sanitize(summary["reportRefreshDate"].as_str().unwrap_or("unknown")),
-            adoption["reportPeriod"],
-            adoption["totalPromptsSubmitted"],
-            adoption["averagePromptsSubmitted"],
+            summary_number(&adoption["reportPeriod"]),
+            summary_number(&adoption["totalPromptsSubmitted"]),
+            summary_number(&adoption["averagePromptsSubmitted"]),
         )?;
     }
     let mut table: Vec<Vec<String>> = adoption
@@ -462,6 +462,14 @@ pub fn write_report_settings(
     )
 }
 
+/// A number from the report as text, or `-` when Graph sent something else.
+fn summary_number(value: &Value) -> String {
+    match value {
+        Value::Number(number) => number.to_string(),
+        _ => "-".to_owned(),
+    }
+}
+
 fn per_user(total: u64, users: usize) -> String {
     if users == 0 {
         return "-".into();
@@ -482,7 +490,7 @@ pub fn write_rows(
     headers: &[&str],
     rows: &[Vec<String>],
 ) -> Result<()> {
-    let selected = selected_indices(&options.select, headers);
+    let selected = selected_indices(&options.select, headers)?;
     let indices: Vec<usize> = selected.unwrap_or_else(|| (0..headers.len()).collect());
     if options.format == OutputFormat::Plain {
         for row in rows {
@@ -538,20 +546,29 @@ fn write_aligned<T: AsRef<str>>(
     Ok(())
 }
 
-fn selected_indices(select: &str, headers: &[&str]) -> Option<Vec<usize>> {
+/// The columns `--select` names, in its order. A name the table does not
+/// have is refused, so a typo cannot turn into a silently empty column.
+fn selected_indices(select: &str, headers: &[&str]) -> Result<Option<Vec<usize>>> {
     if select.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(
-        select
-            .split(',')
-            .filter_map(|field| {
-                headers
-                    .iter()
-                    .position(|header| header.eq_ignore_ascii_case(field.trim()))
-            })
-            .collect(),
-    )
+    select
+        .split(',')
+        .filter(|field| !field.trim().is_empty())
+        .map(|field| {
+            headers
+                .iter()
+                .position(|header| header.eq_ignore_ascii_case(field.trim()))
+                .ok_or_else(|| {
+                    EntraError::message(format!(
+                        "--select names no column {:?}; this output's columns are {}",
+                        field.trim(),
+                        headers.join(", ")
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 /// Unicode's Default_Ignorable_Code_Point ranges (DerivedCoreProperties.txt).
@@ -632,6 +649,46 @@ fn untrusted_notice(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_refuses_a_column_the_output_does_not_have() {
+        let headers = ["NAME", "EMAIL"];
+        assert_eq!(
+            selected_indices("email, name,", &headers).unwrap(),
+            Some(vec![1, 0])
+        );
+        let error = selected_indices("name,mial", &headers)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("\"mial\""), "{error}");
+        assert!(error.contains("NAME, EMAIL"), "{error}");
+    }
+
+    #[test]
+    fn copilot_summary_line_shows_only_numbers_from_graph() {
+        let summary = serde_json::json!({
+            "reportRefreshDate": "2026-11-01",
+            "adoptionByProduct": [{
+                "reportPeriod": 28,
+                "totalPromptsSubmitted": "\u{1b}[31mred",
+            }],
+        });
+        let options = OutputOptions {
+            format: OutputFormat::Table,
+            select: String::new(),
+            results_only: false,
+            wrap_untrusted: false,
+            lookup: None,
+        };
+        let mut written = Vec::new();
+        write_copilot_summary(&mut written, &options, &summary).unwrap();
+        let first = String::from_utf8(written).unwrap();
+        let first = first.lines().next().unwrap().to_owned();
+        assert_eq!(
+            first,
+            "Report date 2026-11-01, 28 days: - prompts, - per active user"
+        );
+    }
 
     #[test]
     fn terminal_sanitization_removes_control_characters() {
