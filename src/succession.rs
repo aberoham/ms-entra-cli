@@ -39,10 +39,13 @@ pub async fn fill_next_enabled_managers(
         .filter(|person| !person.user.id.is_empty())
         .map(|person| (person.user.id.clone(), person.manager.clone()))
         .collect();
-    let starts: BTreeSet<String> = rows
-        .iter()
-        .filter_map(|row| row.manager.as_ref().map(|manager| manager.id.clone()))
-        .collect();
+    let mut starts = BTreeSet::new();
+    for manager in rows.iter().filter_map(|row| row.manager.as_ref()) {
+        if manager.id.is_empty() {
+            return Err(missing_id());
+        }
+        starts.insert(manager.id.clone());
+    }
     let found = walk_all(graph, &mut links, &starts).await?;
     for row in rows {
         let next = row
@@ -101,9 +104,7 @@ fn walk(links: &ManagerLinks, start: &str) -> Result<Walk> {
             return Ok(Walk::Found(None));
         };
         if manager.id.is_empty() {
-            return Err(EntraError::message(
-                "Graph returned a manager without an object id, so the reporting line cannot be followed",
-            ));
+            return Err(missing_id());
         }
         match manager.account_enabled {
             Some(true) => return Ok(Walk::Found(Some(manager.clone()))),
@@ -118,8 +119,16 @@ fn walk(links: &ManagerLinks, start: &str) -> Result<Walk> {
     Ok(Walk::Found(None))
 }
 
+fn missing_id() -> EntraError {
+    EntraError::message(
+        "Graph returned a manager without an object id, so the reporting line cannot be followed",
+    )
+}
+
 /// Reads the manager of every id in `missing`, at most `CONCURRENT_LOOKUPS`
-/// at a time, into `links`. The first failure stops the rest.
+/// at a time, into `links`. The first failure stops the rest, and every
+/// lookup has finished before it is returned, so a retry under another
+/// account never overlaps a request still running under this one.
 async fn fetch_links(
     graph: &GraphClient,
     links: &mut ManagerLinks,
@@ -139,9 +148,18 @@ async fn fetch_links(
         let Some(joined) = running.join_next().await else {
             return Ok(());
         };
-        let (id, manager) = joined
-            .map_err(|error| EntraError::message(format!("manager lookup failed: {error}")))?;
-        links.insert(id, manager?.map(ManagerSummary::from));
+        let outcome = joined
+            .map_err(|error| EntraError::message(format!("manager lookup failed: {error}")))
+            .and_then(|(id, manager)| Ok((id, manager?)));
+        match outcome {
+            Ok((id, manager)) => {
+                links.insert(id, manager.map(ManagerSummary::from));
+            }
+            Err(error) => {
+                running.shutdown().await;
+                return Err(error);
+            }
+        }
     }
 }
 
@@ -209,17 +227,24 @@ mod tests {
         assert!(walk(&links, "a").is_err());
     }
 
-    #[test]
-    fn walk_gives_up_after_the_level_limit() {
-        let entries: Vec<(String, Option<ManagerSummary>)> = (0..=MAXIMUM_LEVELS)
+    /// A line from `p0` up to `p{enabled_level}`, the only enabled account.
+    fn line(enabled_level: usize) -> ManagerLinks {
+        (0..enabled_level)
             .map(|level| {
+                let above = level + 1;
+                let enabled = above == enabled_level;
                 (
                     format!("p{level}"),
-                    Some(summary(&format!("p{}", level + 1), Some(false))),
+                    Some(summary(&format!("p{above}"), Some(enabled))),
                 )
             })
-            .collect();
-        let links: ManagerLinks = entries.into_iter().collect();
-        assert_eq!(found(walk(&links, "p0").unwrap()), None);
+            .collect()
+    }
+
+    #[test]
+    fn walk_reaches_ten_levels_up_and_no_further() {
+        assert_eq!(found(walk(&line(9), "p0").unwrap()), Some("p9".into()));
+        assert_eq!(found(walk(&line(10), "p0").unwrap()), Some("p10".into()));
+        assert_eq!(found(walk(&line(11), "p0").unwrap()), None);
     }
 }

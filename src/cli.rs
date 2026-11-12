@@ -3485,6 +3485,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_disabled_manager_without_an_object_id_fails_the_check() {
+        let mut null_id = manager_json("Ann", Some(false));
+        null_id["id"] = Value::Null;
+        let mut empty_id = manager_json("Ann", Some(false));
+        empty_id["id"] = json!("");
+        let mut missing_id = manager_json("Ann", Some(false));
+        missing_id.as_object_mut().unwrap().remove("id");
+        for manager in [null_id, empty_id, missing_id] {
+            let listing = json!({"value": [managed("Bo", Some(true), manager.clone())]});
+            let (server, graph) = succession_server(listing, &[]).await;
+            let mut written = Vec::new();
+            let error = run_disabled_manager(&mut written, &json_output(false), &graph, false)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("without an object id"),
+                "{error}"
+            );
+            assert!(written.is_empty(), "{manager}");
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn a_refused_manager_lookup_fails_the_check_as_an_authorization_failure() {
         let listing = json!({"value": [
             managed("Bo", Some(true), manager_json("Ann", Some(false))),
