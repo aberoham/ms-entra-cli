@@ -378,8 +378,9 @@ disabled.
 Graph returns at most 100 people per page when it expands managers, against
 999 otherwise, and the pages arrive one after another, so this is the slowest
 read `entra` makes. Asking for enabled accounts only saves the pages that would
-hold disabled ones, so the default check is faster than `--include-disabled`
-in proportion to how many accounts are disabled.
+hold disabled ones. `--include-disabled` reads more pages, but its listing
+already holds the disabled managers' own records, so it needs fewer separate
+manager lookups for the next enabled manager.
 
 Each row also names the next enabled manager: the first account above the
 disabled manager, following each manager's own manager, whose account is
@@ -389,8 +390,7 @@ about whether that person is the right manager. It is empty when the line
 ends with no manager, loops, reaches a manager whose enabled state is not
 returned, would name the person themself, or goes ten levels without an
 enabled account. Links the listing already holds cost no request; each
-missing one is read once, up to eight at a time, so the walk adds little to
-the read.
+missing one is read once, up to eight at a time.
 
 Rows are ordered by manager, then by name, so each disabled manager's people
 sit together. The table and `--plain` columns are `NAME`, `SIGN-IN NAME`,

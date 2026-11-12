@@ -635,7 +635,7 @@ By default people whose own account is disabled are left out, because a \
 disabled person under a disabled manager usually needs no action, and Graph \
 is asked for enabled accounts only. --include-disabled reads every account \
 and lists disabled people too; the ENABLED column tells them apart, and the \
-read takes longer.
+listing has more pages to read.
 
 NEXT ENABLED MANAGER is the first account above the disabled manager, \
 following each manager's own manager, whose account is enabled. It is worked \
