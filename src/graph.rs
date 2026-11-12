@@ -349,6 +349,28 @@ impl GraphClient {
         }
     }
 
+    /// Reads the manager of the user whose object id Graph itself returned,
+    /// `None` when the directory records no manager. Because the id came from
+    /// Graph, a typed not-found answer means no manager, and no address
+    /// fallback is tried: one request per person.
+    pub async fn manager_of_object(&self, id: &str) -> Result<Option<User>> {
+        // `user_url` refuses these keys with a not-found error of its own,
+        // which must not read as "no manager".
+        if matches!(id.trim(), "" | "." | "..") {
+            return Err(EntraError::message(format!(
+                "{id:?} is not an object id, so its manager cannot be read"
+            )));
+        }
+        match self.manager_direct(id).await {
+            Ok(manager) => Ok(Some(manager)),
+            Err(error) if error.is_not_found() => Ok(None),
+            Err(error) if error.is_permission() => {
+                Err(error.permission("read the manager relationship"))
+            }
+            Err(error) => Err(error.context(format!("getting manager for {id:?}"))),
+        }
+    }
+
     pub async fn get_direct_reports(&self, key: &str) -> Result<Vec<User>> {
         match self.direct_reports_direct(key).await {
             Ok(reports) => Ok(reports),
@@ -1855,6 +1877,17 @@ mod tests {
             .with_progress(sink);
         assert_eq!(graph.list_users().await.unwrap().len(), 2);
         assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_of_object_refuses_keys_that_are_not_object_ids() {
+        let server = MockServer::start().await;
+        let graph = client(&server).await;
+        for key in ["", "  ", ".", "..", " .. "] {
+            let error = graph.manager_of_object(key).await.unwrap_err();
+            assert!(!error.is_not_found(), "{key:?} must not read as no manager");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

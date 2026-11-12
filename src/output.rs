@@ -8,8 +8,8 @@ use serde_json::Value;
 use crate::error::{EntraError, Result};
 use crate::graph::ProgressSink;
 use crate::model::{
-    CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ReportSettings,
-    SubscribedSku, User,
+    CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ManagerSummary,
+    ReportSettings, SubscribedSku, User,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +185,8 @@ pub mod columns {
         "DEPARTMENT",
         "MANAGER",
         "MANAGER SIGN-IN NAME",
+        "NEXT ENABLED MANAGER",
+        "NEXT ENABLED SIGN-IN NAME",
     ];
     pub const GROUP_MEMBERSHIPS: &[&str] = &["NAME", "EMAIL", "KIND", "SOURCE", "MEMBERSHIP"];
     pub const SKUS: &[&str] = &["SKU", "ID", "ASSIGNED", "ENABLED"];
@@ -258,13 +260,8 @@ pub fn write_managed_users(
     let rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
-            let (manager_name, manager_sign_in) =
-                row.manager.as_ref().map_or(("", ""), |manager| {
-                    (
-                        manager.display_name.as_str(),
-                        manager.user_principal_name.as_str(),
-                    )
-                });
+            let (manager_name, manager_sign_in) = name_and_sign_in(row.manager.as_ref());
+            let (next_name, next_sign_in) = name_and_sign_in(row.next_enabled_manager.as_ref());
             vec![
                 sanitize(&row.user.display_name),
                 sanitize(&row.user.user_principal_name),
@@ -272,10 +269,21 @@ pub fn write_managed_users(
                 sanitize(&row.user.department),
                 sanitize(manager_name),
                 sanitize(manager_sign_in),
+                sanitize(next_name),
+                sanitize(next_sign_in),
             ]
         })
         .collect();
     write_rows(&mut writer, options, headers, &rows)
+}
+
+fn name_and_sign_in(manager: Option<&ManagerSummary>) -> (&str, &str) {
+    manager.map_or(("", ""), |manager| {
+        (
+            manager.display_name.as_str(),
+            manager.user_principal_name.as_str(),
+        )
+    })
 }
 
 fn enabled_label(enabled: Option<bool>) -> &'static str {
