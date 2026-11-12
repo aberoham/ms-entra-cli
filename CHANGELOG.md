@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `entra user disabled-manager` names the next enabled manager for each row: the first account above the disabled manager whose account is enabled, as a suggestion for whom the people could report to. New `NEXT ENABLED MANAGER` and `NEXT ENABLED SIGN-IN NAME` columns follow the existing ones, and `--json` adds a `nextEnabledManager` object, `null` when there is none.
 - `entra user disabled-manager` and `user list --disabled-manager` ask Graph for enabled accounts only, unless `--include-disabled` is given. Graph returns only 100 people per page when it expands managers, so leaving disabled accounts out saves the requests for every page of them. An account whose enabled state Graph holds no value for is no longer read by the default check.
 - Show a running count of records read on standard error while a read spans several pages of Graph results, and erase it when the read ends. It appears only when standard error is a terminal, and not with `--verbose`.
 

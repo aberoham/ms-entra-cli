@@ -381,11 +381,25 @@ read `entra` makes. Asking for enabled accounts only saves the pages that would
 hold disabled ones, so the default check is faster than `--include-disabled`
 in proportion to how many accounts are disabled.
 
+Each row also names the next enabled manager: the first account above the
+disabled manager, following each manager's own manager, whose account is
+enabled. It is worked out from the directory as a suggestion for whom the
+people could report to instead. It is not stored anywhere and says nothing
+about whether that person is the right manager. It is empty when the line
+ends with no manager, loops, reaches a manager whose enabled state is not
+returned, would name the person themself, or goes ten levels without an
+enabled account. Links the listing already holds cost no request; each
+missing one is read once, up to eight at a time, so the walk adds little to
+the read.
+
 Rows are ordered by manager, then by name, so each disabled manager's people
 sit together. The table and `--plain` columns are `NAME`, `SIGN-IN NAME`,
-`ENABLED`, `DEPARTMENT`, `MANAGER` and `MANAGER SIGN-IN NAME`. `--json` gives
-each person's summary record with a `manager` object (`id`, `displayName`,
-`userPrincipalName`, `accountEnabled`), and honours `--wrap-untrusted`.
+`ENABLED`, `DEPARTMENT`, `MANAGER`, `MANAGER SIGN-IN NAME`,
+`NEXT ENABLED MANAGER` and `NEXT ENABLED SIGN-IN NAME`. `--json` gives each
+person's summary record with a `manager` object and a `nextEnabledManager`
+object, each with `id`, `displayName`, `userPrincipalName` and
+`accountEnabled`; `nextEnabledManager` is `null` when there is no suggestion.
+`--json` honours `--wrap-untrusted` for both names.
 
 `--disabled-manager` cannot be combined with `--all`, `--group`,
 `--sign-in-activity` or `--manager`; for those, filter the export instead.
@@ -396,6 +410,9 @@ entra user disabled-manager
 
 # Each disabled manager once.
 entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
+
+# Each person and whom they could report to instead.
+entra user disabled-manager --plain --select "SIGN-IN NAME,NEXT ENABLED SIGN-IN NAME"
 ```
 
 ## Global flags

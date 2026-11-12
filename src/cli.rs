@@ -637,6 +637,13 @@ is asked for enabled accounts only. --include-disabled reads every account \
 and lists disabled people too; the ENABLED column tells them apart, and the \
 read takes longer.
 
+NEXT ENABLED MANAGER is the first account above the disabled manager, \
+following each manager's own manager, whose account is enabled. It is worked \
+out from the directory as a suggestion for whom the people could report to; \
+it is not stored anywhere and says nothing about whether that person is the \
+right manager. It is empty when the line ends, loops, reaches a manager whose \
+state is unknown or goes ten levels without one.
+
 Rows are ordered by manager, so each disabled manager's people sit together. \
 Needs User.Read.All: sign in with 'entra auth login --directory'.",
         after_help = "\
@@ -644,7 +651,8 @@ Examples:
   entra user disabled-manager
   entra user disabled-manager --include-disabled
   entra user disabled-manager --json
-  entra user disabled-manager --plain --select \"MANAGER SIGN-IN NAME\" | sort -u"
+  entra user disabled-manager --plain --select \"MANAGER SIGN-IN NAME\" | sort -u
+  entra user disabled-manager --plain --select \"SIGN-IN NAME,NEXT ENABLED SIGN-IN NAME\""
     )]
     DisabledManager(DisabledManagerArgs),
     #[command(
