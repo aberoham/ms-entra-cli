@@ -354,6 +354,13 @@ impl GraphClient {
     /// Graph, a typed not-found answer means no manager, and no address
     /// fallback is tried: one request per person.
     pub async fn manager_of_object(&self, id: &str) -> Result<Option<User>> {
+        // `user_url` refuses these keys with a not-found error of its own,
+        // which must not read as "no manager".
+        if matches!(id.trim(), "" | "." | "..") {
+            return Err(EntraError::message(format!(
+                "{id:?} is not an object id, so its manager cannot be read"
+            )));
+        }
         match self.manager_direct(id).await {
             Ok(manager) => Ok(Some(manager)),
             Err(error) if error.is_not_found() => Ok(None),

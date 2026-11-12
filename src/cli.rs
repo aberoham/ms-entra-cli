@@ -3485,6 +3485,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn next_enabled_manager_is_sanitised_selected_and_wrapped() {
+        // Each run reads Ann's manager once, so each gets its own server.
+        async fn written(output: OutputOptions) -> Vec<u8> {
+            let listing = json!({"value": [
+                managed("Bo", Some(true), manager_json("Ann", Some(false))),
+            ]});
+            let mut una = manager_json("Una\u{202e}\nX", Some(true));
+            una["userPrincipalName"] = json!("una@example.test");
+            let (_server, graph) =
+                succession_server(listing, &[(fixture_id("9000", "Ann"), 200, una)]).await;
+            let mut written = Vec::new();
+            run_disabled_manager(&mut written, &output, &graph, false)
+                .await
+                .unwrap();
+            written
+        }
+
+        let plain = written(OutputOptions {
+            format: OutputFormat::Plain,
+            ..json_output(false)
+        })
+        .await;
+        assert_eq!(
+            String::from_utf8(plain).unwrap(),
+            "Bo\tbo@example.test\tyes\t\tAnn\tann@example.test\tUna X\tuna@example.test\n"
+        );
+
+        let selected = written(OutputOptions {
+            format: OutputFormat::Plain,
+            select: "SIGN-IN NAME,NEXT ENABLED SIGN-IN NAME".into(),
+            ..json_output(false)
+        })
+        .await;
+        assert_eq!(
+            String::from_utf8(selected).unwrap(),
+            "bo@example.test\tuna@example.test\n"
+        );
+
+        let wrapped = written(OutputOptions {
+            wrap_untrusted: true,
+            ..json_output(true)
+        })
+        .await;
+        let wrapped: Value = serde_json::from_slice(&wrapped).unwrap();
+        let next = &wrapped[0]["nextEnabledManager"];
+        assert!(
+            next["displayName"]
+                .as_str()
+                .unwrap()
+                .starts_with("[UNTRUSTED:"),
+            "{next}"
+        );
+        assert_eq!(next["userPrincipalName"], "una@example.test");
+    }
+
+    #[tokio::test]
     async fn a_disabled_manager_without_an_object_id_fails_the_check() {
         let mut null_id = manager_json("Ann", Some(false));
         null_id["id"] = Value::Null;
@@ -3492,7 +3548,9 @@ mod tests {
         empty_id["id"] = json!("");
         let mut missing_id = manager_json("Ann", Some(false));
         missing_id.as_object_mut().unwrap().remove("id");
-        for manager in [null_id, empty_id, missing_id] {
+        let mut blank_id = manager_json("Ann", Some(false));
+        blank_id["id"] = json!("  ");
+        for manager in [null_id, empty_id, missing_id, blank_id] {
             let listing = json!({"value": [managed("Bo", Some(true), manager.clone())]});
             let (server, graph) = succession_server(listing, &[]).await;
             let mut written = Vec::new();

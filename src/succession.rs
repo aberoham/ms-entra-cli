@@ -41,7 +41,7 @@ pub async fn fill_next_enabled_managers(
         .collect();
     let mut starts = BTreeSet::new();
     for manager in rows.iter().filter_map(|row| row.manager.as_ref()) {
-        if manager.id.is_empty() {
+        if manager.id.trim().is_empty() {
             return Err(missing_id());
         }
         starts.insert(manager.id.clone());
@@ -103,7 +103,7 @@ fn walk(links: &ManagerLinks, start: &str) -> Result<Walk> {
         let Some(manager) = link else {
             return Ok(Walk::Found(None));
         };
-        if manager.id.is_empty() {
+        if manager.id.trim().is_empty() {
             return Err(missing_id());
         }
         match manager.account_enabled {
