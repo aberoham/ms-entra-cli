@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `entra user disabled-manager` and `user list --disabled-manager` ask Graph for enabled accounts only, unless `--include-disabled` is given. Graph returns only 100 people per page when it expands managers, so leaving disabled accounts out saves the requests for every page of them. A person whose enabled state Graph does not return is now left out of the default check.
+- Show a running count of records read on standard error while a read spans several pages of Graph results, and erase it when the read ends. It appears only when standard error is a terminal.
+
 ## v0.5.0 - 2026-11-11
 
 - Add `entra user disabled-manager`, and the same check as `entra user list --disabled-manager`, listing everyone whose manager's account is disabled, grouped by manager. People whose own account is disabled are left out unless `--include-disabled` is given. It needs `User.Read.All`, as `user list` does.

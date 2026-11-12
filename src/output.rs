@@ -1,9 +1,12 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::{EntraError, Result};
+use crate::graph::ProgressSink;
 use crate::model::{
     CompanyCount, CompanyUsage, CopilotUsage, GroupMembership, ManagedUser, ReportSettings,
     SubscribedSku, User,
@@ -131,6 +134,44 @@ impl OutputOptions {
         envelope.insert("count".into(), Value::from(1));
         Ok(Value::Object(envelope))
     }
+}
+
+/// Builds a progress sink that keeps one status line on standard error,
+/// such as `Reading from Microsoft Graph: 3000 records so far...`, and
+/// erases it when the read ends. Returns `None` when standard error is not
+/// a terminal, so logs and pipes never receive progress text.
+pub fn terminal_progress() -> Option<ProgressSink> {
+    if !std::io::stderr().is_terminal() {
+        return None;
+    }
+    let width = Arc::new(AtomicUsize::new(0));
+    Some(Arc::new(move |count: Option<usize>| {
+        let mut stderr = std::io::stderr().lock();
+        // Progress is advisory: a failed write must not fail the read.
+        let _ = write_progress(&mut stderr, &width, count);
+    }))
+}
+
+fn write_progress(
+    writer: &mut impl Write,
+    width: &AtomicUsize,
+    count: Option<usize>,
+) -> Result<()> {
+    let previous = width.load(Ordering::Relaxed);
+    match count {
+        Some(count) => {
+            let line = format!("Reading from Microsoft Graph: {count} records so far...");
+            let padding = previous.saturating_sub(line.len());
+            write!(writer, "\r{line}{:padding$}", "")?;
+            width.store(line.len(), Ordering::Relaxed);
+        }
+        None => {
+            write!(writer, "\r{:previous$}\r", "")?;
+            width.store(0, Ordering::Relaxed);
+        }
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 /// The columns of each table, named so `--select` can be checked against
@@ -669,6 +710,38 @@ fn untrusted_notice(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_rewrites_one_line_and_erases_it_at_the_end() {
+        let width = AtomicUsize::new(0);
+        let mut written = Vec::new();
+        write_progress(&mut written, &width, Some(999)).unwrap();
+        write_progress(&mut written, &width, Some(1998)).unwrap();
+        write_progress(&mut written, &width, None).unwrap();
+        let first = "Reading from Microsoft Graph: 999 records so far...";
+        let second = "Reading from Microsoft Graph: 1998 records so far...";
+        let blank = " ".repeat(second.len());
+        assert_eq!(
+            String::from_utf8(written).unwrap(),
+            format!("\r{first}\r{second}\r{blank}\r")
+        );
+        assert_eq!(width.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_shorter_progress_line_covers_the_longer_one_before_it() {
+        let width = AtomicUsize::new(0);
+        let mut written = Vec::new();
+        write_progress(&mut written, &width, Some(10_000)).unwrap();
+        written.clear();
+        write_progress(&mut written, &width, Some(5)).unwrap();
+        let text = String::from_utf8(written).unwrap();
+        assert_eq!(
+            text.len(),
+            "\rReading from Microsoft Graph: 10000 records so far...".len()
+        );
+        assert!(text.ends_with("so far...    "), "{text:?}");
+    }
 
     #[test]
     fn select_refuses_a_column_the_output_does_not_have() {

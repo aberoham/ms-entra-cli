@@ -22,10 +22,11 @@ use crate::model::{
     SubscribedSku, User,
 };
 use crate::output::{
-    columns, sanitize, sanitize_multiline, selected_indices, write_company_counts,
-    write_company_usage, write_copilot_summary, write_copilot_trend, write_copilot_usage,
-    write_group_memberships, write_licence_holders, write_managed_users, write_pretty_json,
-    write_report_settings, write_rows, write_skus, write_users, OutputFormat, OutputOptions,
+    columns, sanitize, sanitize_multiline, selected_indices, terminal_progress,
+    write_company_counts, write_company_usage, write_copilot_summary, write_copilot_trend,
+    write_copilot_usage, write_group_memberships, write_licence_holders, write_managed_users,
+    write_pretty_json, write_report_settings, write_rows, write_skus, write_users, OutputFormat,
+    OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
@@ -626,12 +627,14 @@ Examples:
         about = "Find people whose manager's account is disabled",
         long_about = "\
 Find people whose manager's account is disabled: the reporting lines that \
-need a new manager. It reads the whole directory once, with each person's \
+need a new manager. It reads the directory once, with each person's \
 manager, and keeps the people whose manager exists and has a disabled account.
 
 By default people whose own account is disabled are left out, because a \
-disabled person under a disabled manager usually needs no action. \
---include-disabled lists them too; the ENABLED column tells them apart.
+disabled person under a disabled manager usually needs no action, and Graph \
+is asked for enabled accounts only. --include-disabled reads every account \
+and lists disabled people too; the ENABLED column tells them apart, and the \
+read takes longer.
 
 Rows are ordered by manager, so each disabled manager's people sit together. \
 Needs User.Read.All: sign in with 'entra auth login --directory'.",
@@ -1802,15 +1805,16 @@ async fn run_user_list(
 }
 
 /// Lists the people whose manager's account is disabled, after reading the
-/// whole directory with managers expanded. Nothing is written until every
-/// page has arrived, as for `user list`.
+/// whole directory with managers expanded. Unless `include_disabled`, Graph
+/// is asked for enabled accounts only. Nothing is written until every page
+/// has arrived, as for `user list`.
 async fn run_disabled_manager(
     mut writer: impl Write,
     output: &OutputOptions,
     graph: &GraphClient,
     include_disabled: bool,
 ) -> Result<()> {
-    let users = graph.list_users_with_managers().await?;
+    let users = graph.list_users_with_managers(!include_disabled).await?;
     let rows = under_disabled_managers(users, include_disabled);
     if rows.is_empty() && output.format == OutputFormat::Table {
         let whom = if include_disabled {
@@ -1828,9 +1832,9 @@ async fn run_disabled_manager(
 }
 
 /// Keeps the people whose manager is disabled, and drops people whose own
-/// account is disabled unless `include_disabled`. A person whose enabled
-/// state is unknown is kept, so a gap in the data cannot hide anyone. Rows
-/// are ordered by manager, then by name.
+/// account is disabled unless `include_disabled`. Graph has normally left
+/// those out already; the check here keeps the result right if it did not.
+/// Rows are ordered by manager, then by name.
 fn under_disabled_managers(users: Vec<ManagedUser>, include_disabled: bool) -> Vec<ManagedUser> {
     let mut rows: Vec<ManagedUser> = users
         .into_iter()
@@ -2053,7 +2057,11 @@ async fn graph_client_for_account(
         .access_token(&account.email, cli.verbose)
         .await
         .map_err(|error| error.context(format!("getting credentials for {}", account.email)))?;
-    GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)
+    let graph = GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)?;
+    Ok(match terminal_progress() {
+        Some(sink) => graph.with_progress(sink),
+        None => graph,
+    })
 }
 
 fn authenticator_for_account(
