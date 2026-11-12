@@ -3567,6 +3567,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refusal_among_concurrent_lookups_keeps_its_type() {
+        use wiremock::matchers::{method, path};
+        // Ann's lookup is refused at once while Ed's is still waiting.
+        let listing = json!({"value": [
+            managed("Bo", Some(true), manager_json("Ann", Some(false))),
+            managed("Di", Some(true), manager_json("Ed", Some(false))),
+        ]});
+        let denied = json!({"error": {"code": "Authorization_RequestDenied", "message": "denied"}});
+        let (server, graph) =
+            succession_server(listing, &[(fixture_id("9000", "Ann"), 403, denied)]).await;
+        wiremock::Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1.0/users/{}/manager",
+                fixture_id("9000", "Ed")
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(manager_json("Una", Some(true)))
+                    .set_delay(Duration::from_secs(1)),
+            )
+            .mount(&server)
+            .await;
+        let mut written = Vec::new();
+        let error = run_disabled_manager(&mut written, &json_output(false), &graph, false)
+            .await
+            .unwrap_err();
+        assert!(error.is_authorization_failure(), "{error}");
+        assert!(written.is_empty());
+    }
+
+    #[tokio::test]
     async fn a_refused_manager_lookup_fails_the_check_as_an_authorization_failure() {
         let listing = json!({"value": [
             managed("Bo", Some(true), manager_json("Ann", Some(false))),

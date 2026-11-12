@@ -1880,6 +1880,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manager_of_object_refuses_keys_that_are_not_object_ids() {
+        let server = MockServer::start().await;
+        let graph = client(&server).await;
+        for key in ["", "  ", ".", "..", " .. "] {
+            let error = graph.manager_of_object(key).await.unwrap_err();
+            assert!(!error.is_not_found(), "{key:?} must not read as no manager");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_one_page_read_reports_nothing() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
