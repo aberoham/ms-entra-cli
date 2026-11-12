@@ -366,12 +366,14 @@ exists and is disabled (`accountEnabled` is `false`). These are the reporting
 lines that need a new manager.
 
 By default people whose own account is disabled are left out: a disabled
-person under a disabled manager usually needs no action. Graph is asked for
-enabled accounts only (`accountEnabled eq true`), so a person whose enabled
-state Graph does not return is left out too. `--include-disabled` reads every
-account and lists disabled people as well, and the `ENABLED` column tells them
-apart; there a person whose enabled state is not returned is listed. A manager
-whose enabled state is not returned is not counted as disabled.
+person under a disabled manager usually needs no action. Graph is asked only
+for the accounts it matches as enabled (`$filter=accountEnabled eq true`), so
+an account whose enabled state Graph holds no value for is not read.
+`--include-disabled` reads every account and lists disabled people as well,
+and the `ENABLED` column tells them apart. In either case a returned record
+that leaves out `accountEnabled` is listed, so a gap in the response cannot
+hide anyone. A manager whose enabled state is not returned is not counted as
+disabled.
 
 Graph returns at most 100 people per page when it expands managers, against
 999 otherwise, and the pages arrive one after another, so this is the slowest
@@ -419,7 +421,8 @@ A read that spans several pages of Graph results, such as `user list` or
 `user disabled-manager`, shows a running count on standard error, such as
 `Reading from Microsoft Graph: 3000 records so far...`, and erases it when the
 read ends. The count appears only when standard error is a terminal, so pipes,
-logs and JSON output never contain it.
+logs and JSON output never contain it. `--verbose` turns it off, because the
+request lines it prints would break the progress line.
 
 For user commands without `--account`, the default stored account is tried
 first. Only a typed Graph authorization failure causes `entra` to try another

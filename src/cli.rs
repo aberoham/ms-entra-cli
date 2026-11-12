@@ -2058,7 +2058,14 @@ async fn graph_client_for_account(
         .await
         .map_err(|error| error.context(format!("getting credentials for {}", account.email)))?;
     let graph = GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)?;
-    Ok(match terminal_progress() {
+    // Verbose request lines would land in the middle of the progress line,
+    // so a verbose run shows only the request lines.
+    let progress = if cli.verbose {
+        None
+    } else {
+        terminal_progress()
+    };
+    Ok(match progress {
         Some(sink) => graph.with_progress(sink),
         None => graph,
     })
@@ -3227,7 +3234,7 @@ mod tests {
             .unwrap();
         let written: Value = serde_json::from_slice(&written).unwrap();
         // Cy is disabled; Flo's manager is enabled; Ivy's state is unknown;
-        // Jo has no manager. Di's own state is unknown, so Di stays.
+        // Jo has no manager. Di's record leaves out accountEnabled, so Di stays.
         assert_eq!(names(&written), ["Bo", "Zoe", "Di"]);
         assert_eq!(written["count"], 3);
         assert_eq!(written["results"][0]["manager"]["displayName"], "Ann");
@@ -3246,6 +3253,57 @@ mod tests {
             .unwrap();
         let written: Value = serde_json::from_slice(&written).unwrap();
         assert_eq!(names(&written), ["Bo", "Cy", "Zoe", "Di"]);
+    }
+
+    /// Serves the managed listing only when its `$filter` matches
+    /// `enabled_only`, and expects exactly `calls` requests.
+    async fn filter_checking_server(
+        enabled_only: bool,
+        calls: u64,
+    ) -> (wiremock::MockServer, GraphClient) {
+        use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+        let server = wiremock::MockServer::start().await;
+        let mock = wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION_FOR_TESTS));
+        let mock = if enabled_only {
+            mock.and(query_param("$filter", "accountEnabled eq true"))
+        } else {
+            mock.and(query_param_is_missing("$filter"))
+        };
+        mock.respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(disabled_manager_directory()),
+        )
+        .expect(calls)
+        .mount(&server)
+        .await;
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), false)
+            .unwrap()
+            .with_base_url(reqwest::Url::parse(&format!("{}/v1.0/", server.uri())).unwrap());
+        (server, graph)
+    }
+
+    #[tokio::test]
+    async fn both_forms_ask_graph_for_enabled_accounts_unless_include_disabled() {
+        for include_disabled in [false, true] {
+            let (server, graph) = filter_checking_server(!include_disabled, 2).await;
+            let mut flag_args = vec!["--disabled-manager"];
+            if include_disabled {
+                flag_args.push("--include-disabled");
+            }
+            run_disabled_manager(Vec::new(), &json_output(false), &graph, include_disabled)
+                .await
+                .unwrap();
+            run_user_list(
+                Vec::new(),
+                &json_output(false),
+                &graph,
+                &user_list(&flag_args),
+            )
+            .await
+            .unwrap();
+            server.verify().await;
+        }
     }
 
     #[tokio::test]

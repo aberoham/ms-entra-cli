@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- `entra user disabled-manager` and `user list --disabled-manager` ask Graph for enabled accounts only, unless `--include-disabled` is given. Graph returns only 100 people per page when it expands managers, so leaving disabled accounts out saves the requests for every page of them. A person whose enabled state Graph does not return is now left out of the default check.
-- Show a running count of records read on standard error while a read spans several pages of Graph results, and erase it when the read ends. It appears only when standard error is a terminal.
+- `entra user disabled-manager` and `user list --disabled-manager` ask Graph for enabled accounts only, unless `--include-disabled` is given. Graph returns only 100 people per page when it expands managers, so leaving disabled accounts out saves the requests for every page of them. An account whose enabled state Graph holds no value for is no longer read by the default check.
+- Show a running count of records read on standard error while a read spans several pages of Graph results, and erase it when the read ends. It appears only when standard error is a terminal, and not with `--verbose`.
 
 ## v0.5.0 - 2026-11-11
 
