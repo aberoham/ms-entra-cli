@@ -7,3 +7,4 @@ pub mod graph;
 pub mod model;
 pub mod output;
 pub mod secrets;
+pub mod succession;

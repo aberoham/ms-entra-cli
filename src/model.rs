@@ -562,8 +562,31 @@ pub struct ManagerSummary {
     pub account_enabled: Option<bool>,
 }
 
+impl From<User> for ManagerSummary {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            display_name: user.display_name,
+            user_principal_name: user.user_principal_name,
+            account_enabled: user.account_enabled,
+        }
+    }
+}
+
+impl ManagerSummary {
+    fn wrap_untrusted(&self, id: &str) -> Self {
+        let mut out = self.clone();
+        if !out.display_name.is_empty() {
+            out.display_name = format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", out.display_name);
+        }
+        out
+    }
+}
+
 /// A user's summary profile with their manager, `None` when the directory
-/// records no manager.
+/// records no manager. `next_enabled_manager` is never read from Graph: the
+/// disabled-manager check fills it with the first enabled account above a
+/// disabled manager, and it stays `None` everywhere else.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedUser {
@@ -571,6 +594,8 @@ pub struct ManagedUser {
     pub user: User,
     #[serde(default)]
     pub manager: Option<ManagerSummary>,
+    #[serde(default)]
+    pub next_enabled_manager: Option<ManagerSummary>,
 }
 
 impl ManagedUser {
@@ -583,17 +608,17 @@ impl ManagedUser {
     }
 
     pub fn wrap_untrusted(&self, id: &str) -> Self {
-        let mut out = Self {
+        Self {
             user: self.user.wrap_untrusted(id),
-            manager: self.manager.clone(),
-        };
-        if let Some(manager) = &mut out.manager {
-            if !manager.display_name.is_empty() {
-                manager.display_name =
-                    format!("[UNTRUSTED:{id}]{}[/UNTRUSTED:{id}]", manager.display_name);
-            }
+            manager: self
+                .manager
+                .as_ref()
+                .map(|manager| manager.wrap_untrusted(id)),
+            next_enabled_manager: self
+                .next_enabled_manager
+                .as_ref()
+                .map(|manager| manager.wrap_untrusted(id)),
         }
-        out
     }
 }
 

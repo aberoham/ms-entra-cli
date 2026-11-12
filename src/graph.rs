@@ -349,6 +349,21 @@ impl GraphClient {
         }
     }
 
+    /// Reads the manager of the user whose object id Graph itself returned,
+    /// `None` when the directory records no manager. Because the id came from
+    /// Graph, a typed not-found answer means no manager, and no address
+    /// fallback is tried: one request per person.
+    pub async fn manager_of_object(&self, id: &str) -> Result<Option<User>> {
+        match self.manager_direct(id).await {
+            Ok(manager) => Ok(Some(manager)),
+            Err(error) if error.is_not_found() => Ok(None),
+            Err(error) if error.is_permission() => {
+                Err(error.permission("read the manager relationship"))
+            }
+            Err(error) => Err(error.context(format!("getting manager for {id:?}"))),
+        }
+    }
+
     pub async fn get_direct_reports(&self, key: &str) -> Result<Vec<User>> {
         match self.direct_reports_direct(key).await {
             Ok(reports) => Ok(reports),

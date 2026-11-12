@@ -29,6 +29,7 @@ use crate::output::{
     OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
+use crate::succession::fill_next_enabled_managers;
 
 /// Drops the spaces a paste often carries, so a pasted object id or address
 /// is still recognised as one rather than searched for as a name.
@@ -1814,9 +1815,10 @@ async fn run_user_list(
 }
 
 /// Lists the people whose manager's account is disabled, after reading the
-/// whole directory with managers expanded. Unless `include_disabled`, Graph
-/// is asked for enabled accounts only. Nothing is written until every page
-/// has arrived, as for `user list`.
+/// whole directory with managers expanded, with the first enabled account
+/// above each disabled manager. Unless `include_disabled`, Graph is asked for
+/// enabled accounts only. Nothing is written until every read has finished,
+/// as for `user list`.
 async fn run_disabled_manager(
     mut writer: impl Write,
     output: &OutputOptions,
@@ -1824,7 +1826,8 @@ async fn run_disabled_manager(
     include_disabled: bool,
 ) -> Result<()> {
     let users = graph.list_users_with_managers(!include_disabled).await?;
-    let rows = under_disabled_managers(users, include_disabled);
+    let mut rows = under_disabled_managers(users.clone(), include_disabled);
+    fill_next_enabled_managers(graph, &users, &mut rows).await?;
     if rows.is_empty() && output.format == OutputFormat::Table {
         let whom = if include_disabled {
             "No one"
@@ -3339,6 +3342,159 @@ mod tests {
         assert_eq!(from_flag, from_command);
     }
 
+    /// Serves `listing` as the managed listing and each `(id, status, body)`
+    /// as the answer to that person's manager lookup, expected exactly once.
+    async fn succession_server(
+        listing: Value,
+        managers: &[(String, u16, Value)],
+    ) -> (wiremock::MockServer, GraphClient) {
+        use wiremock::matchers::{method, path, query_param};
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION_FOR_TESTS))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(listing))
+            .mount(&server)
+            .await;
+        for (id, status, body) in managers {
+            wiremock::Mock::given(method("GET"))
+                .and(path(format!("/v1.0/users/{id}/manager")))
+                .respond_with(wiremock::ResponseTemplate::new(*status).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), false)
+            .unwrap()
+            .with_base_url(reqwest::Url::parse(&format!("{}/v1.0/", server.uri())).unwrap());
+        (server, graph)
+    }
+
+    fn next_sign_in(row: &Value) -> Option<&str> {
+        row["nextEnabledManager"]["userPrincipalName"].as_str()
+    }
+
+    #[tokio::test]
+    async fn next_enabled_manager_walks_past_disabled_levels_reading_each_link_once() {
+        // Ann and Ed are disabled and both report to Max, also disabled, who
+        // reports to Una. Ann leads two people, and Max is shared, yet each
+        // manager link is read once.
+        let listing = json!({"value": [
+            managed("Bo", Some(true), manager_json("Ann", Some(false))),
+            managed("Zoe", Some(true), manager_json("Ann", Some(false))),
+            managed("Di", Some(true), manager_json("Ed", Some(false))),
+        ]});
+        let (server, graph) = succession_server(
+            listing,
+            &[
+                (
+                    fixture_id("9000", "Ann"),
+                    200,
+                    manager_json("Max", Some(false)),
+                ),
+                (
+                    fixture_id("9000", "Ed"),
+                    200,
+                    manager_json("Max", Some(false)),
+                ),
+                (
+                    fixture_id("9000", "Max"),
+                    200,
+                    manager_json("Una", Some(true)),
+                ),
+            ],
+        )
+        .await;
+        let mut written = Vec::new();
+        run_disabled_manager(&mut written, &json_output(false), &graph, false)
+            .await
+            .unwrap();
+        let written: Value = serde_json::from_slice(&written).unwrap();
+        for row in written["results"].as_array().unwrap() {
+            assert_eq!(next_sign_in(row), Some("una@example.test"), "{row}");
+            assert_eq!(row["nextEnabledManager"]["accountEnabled"], true);
+        }
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn next_enabled_manager_uses_links_the_listing_already_holds() {
+        // With --include-disabled the listing holds Ann herself, so her
+        // manager costs no request.
+        let mut ann = managed("Ann", Some(false), manager_json("Una", Some(true)));
+        ann["id"] = json!(fixture_id("9000", "Ann"));
+        let listing = json!({"value": [
+            managed("Bo", Some(true), manager_json("Ann", Some(false))),
+            ann,
+        ]});
+        let (server, graph) = succession_server(listing, &[]).await;
+        let mut written = Vec::new();
+        run_disabled_manager(&mut written, &json_output(false), &graph, true)
+            .await
+            .unwrap();
+        let written: Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(
+            next_sign_in(&written["results"][0]),
+            Some("una@example.test")
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn next_enabled_manager_is_empty_at_the_top_and_never_the_person() {
+        // Ann has no manager. Ed's manager is Di, one of Ed's own people, so
+        // Di gets no suggestion rather than herself.
+        let listing = json!({"value": [
+            managed("Bo", Some(true), manager_json("Ann", Some(false))),
+            managed("Di", Some(true), manager_json("Ed", Some(false))),
+        ]});
+        let mut di_as_manager = manager_json("Di", Some(true));
+        di_as_manager["id"] = json!(fixture_id("8000", "Di"));
+        let not_found = json!({"error": {"code": "Request_ResourceNotFound", "message": "none"}});
+        let (server, graph) = succession_server(
+            listing,
+            &[
+                (fixture_id("9000", "Ann"), 404, not_found),
+                (fixture_id("9000", "Ed"), 200, di_as_manager),
+            ],
+        )
+        .await;
+        let mut written = Vec::new();
+        run_disabled_manager(&mut written, &json_output(false), &graph, false)
+            .await
+            .unwrap();
+        let written: Value = serde_json::from_slice(&written).unwrap();
+        let rows = written["results"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert!(
+                row.get("nextEnabledManager").is_some(),
+                "key always present"
+            );
+            assert_eq!(row["nextEnabledManager"], Value::Null, "{row}");
+        }
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_manager_lookup_fails_the_check_as_an_authorization_failure() {
+        let listing = json!({"value": [
+            managed("Bo", Some(true), manager_json("Ann", Some(false))),
+        ]});
+        let denied = json!({"error": {"code": "Authorization_RequestDenied", "message": "denied"}});
+        let (_server, graph) =
+            succession_server(listing, &[(fixture_id("9000", "Ann"), 403, denied)]).await;
+        let mut written = Vec::new();
+        let error = run_disabled_manager(&mut written, &json_output(false), &graph, false)
+            .await
+            .unwrap_err();
+        assert!(error.is_authorization_failure(), "{error}");
+        assert!(
+            written.is_empty(),
+            "nothing is written before every read ends"
+        );
+    }
+
     #[tokio::test]
     async fn disabled_manager_plain_rows_name_each_manager_and_json_is_wrapped() {
         let (_server, graph) = disabled_manager_server().await;
@@ -3353,11 +3509,11 @@ mod tests {
         let table = String::from_utf8(table).unwrap();
         assert_eq!(
             table.lines().next(),
-            Some("Bo\tbo@example.test\tyes\t\tAnn\tann@example.test")
+            Some("Bo\tbo@example.test\tyes\t\tAnn\tann@example.test\t\t")
         );
         assert_eq!(
             table.lines().nth(2),
-            Some("Di\tdi@example.test\t-\t\tEd\ted@example.test")
+            Some("Di\tdi@example.test\t-\t\tEd\ted@example.test\t\t")
         );
 
         let mut wrapped = Vec::new();
