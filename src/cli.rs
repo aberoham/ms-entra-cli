@@ -22,10 +22,11 @@ use crate::model::{
     SubscribedSku, User,
 };
 use crate::output::{
-    columns, sanitize, sanitize_multiline, selected_indices, write_company_counts,
-    write_company_usage, write_copilot_summary, write_copilot_trend, write_copilot_usage,
-    write_group_memberships, write_licence_holders, write_managed_users, write_pretty_json,
-    write_report_settings, write_rows, write_skus, write_users, OutputFormat, OutputOptions,
+    columns, sanitize, sanitize_multiline, selected_indices, terminal_progress,
+    write_company_counts, write_company_usage, write_copilot_summary, write_copilot_trend,
+    write_copilot_usage, write_group_memberships, write_licence_holders, write_managed_users,
+    write_pretty_json, write_report_settings, write_rows, write_skus, write_users, OutputFormat,
+    OutputOptions,
 };
 use crate::secrets::{CredentialStore, KeyringStore};
 
@@ -626,12 +627,14 @@ Examples:
         about = "Find people whose manager's account is disabled",
         long_about = "\
 Find people whose manager's account is disabled: the reporting lines that \
-need a new manager. It reads the whole directory once, with each person's \
+need a new manager. It reads the directory once, with each person's \
 manager, and keeps the people whose manager exists and has a disabled account.
 
 By default people whose own account is disabled are left out, because a \
-disabled person under a disabled manager usually needs no action. \
---include-disabled lists them too; the ENABLED column tells them apart.
+disabled person under a disabled manager usually needs no action, and Graph \
+is asked for enabled accounts only. --include-disabled reads every account \
+and lists disabled people too; the ENABLED column tells them apart, and the \
+read takes longer.
 
 Rows are ordered by manager, so each disabled manager's people sit together. \
 Needs User.Read.All: sign in with 'entra auth login --directory'.",
@@ -885,6 +888,17 @@ impl UserList {
 struct DisabledManagerArgs {
     #[arg(long, help = "Also list people whose own account is disabled")]
     include_disabled: bool,
+}
+
+impl DisabledManagerArgs {
+    async fn run(
+        &self,
+        writer: impl Write,
+        output: &OutputOptions,
+        graph: &GraphClient,
+    ) -> Result<()> {
+        run_disabled_manager(writer, output, graph, self.include_disabled).await
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1638,9 +1652,7 @@ async fn run_user(
             let found = graph.search_users(&query, top).await?;
             write_users(io::stdout(), output, &found)
         }
-        UserCommand::DisabledManager(args) => {
-            run_disabled_manager(io::stdout(), output, graph, args.include_disabled).await
-        }
+        UserCommand::DisabledManager(args) => args.run(io::stdout(), output, graph).await,
         UserCommand::List(list) => run_user_list(io::stdout(), output, graph, &list).await,
     }
 }
@@ -1802,15 +1814,16 @@ async fn run_user_list(
 }
 
 /// Lists the people whose manager's account is disabled, after reading the
-/// whole directory with managers expanded. Nothing is written until every
-/// page has arrived, as for `user list`.
+/// whole directory with managers expanded. Unless `include_disabled`, Graph
+/// is asked for enabled accounts only. Nothing is written until every page
+/// has arrived, as for `user list`.
 async fn run_disabled_manager(
     mut writer: impl Write,
     output: &OutputOptions,
     graph: &GraphClient,
     include_disabled: bool,
 ) -> Result<()> {
-    let users = graph.list_users_with_managers().await?;
+    let users = graph.list_users_with_managers(!include_disabled).await?;
     let rows = under_disabled_managers(users, include_disabled);
     if rows.is_empty() && output.format == OutputFormat::Table {
         let whom = if include_disabled {
@@ -1828,9 +1841,9 @@ async fn run_disabled_manager(
 }
 
 /// Keeps the people whose manager is disabled, and drops people whose own
-/// account is disabled unless `include_disabled`. A person whose enabled
-/// state is unknown is kept, so a gap in the data cannot hide anyone. Rows
-/// are ordered by manager, then by name.
+/// account is disabled unless `include_disabled`. Graph has normally left
+/// those out already; the check here keeps the result right if it did not.
+/// Rows are ordered by manager, then by name.
 fn under_disabled_managers(users: Vec<ManagedUser>, include_disabled: bool) -> Vec<ManagedUser> {
     let mut rows: Vec<ManagedUser> = users
         .into_iter()
@@ -2053,7 +2066,11 @@ async fn graph_client_for_account(
         .access_token(&account.email, cli.verbose)
         .await
         .map_err(|error| error.context(format!("getting credentials for {}", account.email)))?;
-    GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)
+    let graph = GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)?;
+    Ok(match terminal_progress() {
+        Some(sink) => graph.with_progress(sink),
+        None => graph,
+    })
 }
 
 fn authenticator_for_account(
@@ -2993,6 +3010,17 @@ mod tests {
         }
     }
 
+    fn disabled_manager_args(args: &[&str]) -> DisabledManagerArgs {
+        let cli =
+            Cli::try_parse_from(["entra", "user", "disabled-manager"].iter().chain(args)).unwrap();
+        match cli.command {
+            Command::User(UserArgs {
+                command: UserCommand::DisabledManager(parsed),
+            }) => parsed,
+            other => panic!("parsed {other:?}"),
+        }
+    }
+
     fn json_output(results_only: bool) -> OutputOptions {
         OutputOptions {
             format: OutputFormat::Json,
@@ -3219,7 +3247,7 @@ mod tests {
             .unwrap();
         let written: Value = serde_json::from_slice(&written).unwrap();
         // Cy is disabled; Flo's manager is enabled; Ivy's state is unknown;
-        // Jo has no manager. Di's own state is unknown, so Di stays.
+        // Jo has no manager. Di's record leaves out accountEnabled, so Di stays.
         assert_eq!(names(&written), ["Bo", "Zoe", "Di"]);
         assert_eq!(written["count"], 3);
         assert_eq!(written["results"][0]["manager"]["displayName"], "Ann");
@@ -3238,6 +3266,58 @@ mod tests {
             .unwrap();
         let written: Value = serde_json::from_slice(&written).unwrap();
         assert_eq!(names(&written), ["Bo", "Cy", "Zoe", "Di"]);
+    }
+
+    /// Serves the managed listing only when its `$filter` matches
+    /// `enabled_only`, and expects exactly `calls` requests.
+    async fn filter_checking_server(
+        enabled_only: bool,
+        calls: u64,
+    ) -> (wiremock::MockServer, GraphClient) {
+        use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+        let server = wiremock::MockServer::start().await;
+        let mock = wiremock::Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION_FOR_TESTS));
+        let mock = if enabled_only {
+            mock.and(query_param("$filter", "accountEnabled eq true"))
+        } else {
+            mock.and(query_param_is_missing("$filter"))
+        };
+        mock.respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(disabled_manager_directory()),
+        )
+        .expect(calls)
+        .mount(&server)
+        .await;
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), false)
+            .unwrap()
+            .with_base_url(reqwest::Url::parse(&format!("{}/v1.0/", server.uri())).unwrap());
+        (server, graph)
+    }
+
+    #[tokio::test]
+    async fn both_forms_ask_graph_for_enabled_accounts_unless_include_disabled() {
+        for include_disabled in [false, true] {
+            let (server, graph) = filter_checking_server(!include_disabled, 2).await;
+            let mut flag_args = vec!["--disabled-manager"];
+            if include_disabled {
+                flag_args.push("--include-disabled");
+            }
+            disabled_manager_args(&flag_args[1..])
+                .run(Vec::new(), &json_output(false), &graph)
+                .await
+                .unwrap();
+            run_user_list(
+                Vec::new(),
+                &json_output(false),
+                &graph,
+                &user_list(&flag_args),
+            )
+            .await
+            .unwrap();
+            server.verify().await;
+        }
     }
 
     #[tokio::test]
@@ -4922,6 +5002,10 @@ mod tests {
         );
         assert_eq!(
             columns_of(&["user", "list", "--disabled-manager"], false),
+            Some(columns::MANAGED_USERS)
+        );
+        assert_eq!(
+            columns_of(&["user", "disabled-manager"], false),
             Some(columns::MANAGED_USERS)
         );
         assert_eq!(

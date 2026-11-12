@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Method, StatusCode, Url};
@@ -138,6 +139,36 @@ pub struct GraphClient {
     access_token: String,
     base_url: Url,
     verbose: bool,
+    progress: Option<ProgressSink>,
+}
+
+/// Receives the number of items read so far while a read spans several
+/// pages, and `None` once that read ends, whether it succeeded or failed.
+/// A read that fits in one page reports nothing.
+pub type ProgressSink = Arc<dyn Fn(Option<usize>) + Send + Sync>;
+
+/// Reports a paged read's progress and, when dropped, its end, so the sink
+/// hears the end on every return path, including errors.
+struct PageProgress<'a> {
+    sink: Option<&'a ProgressSink>,
+    reported: bool,
+}
+
+impl PageProgress<'_> {
+    fn report(&mut self, count: usize) {
+        if let Some(sink) = self.sink {
+            sink(Some(count));
+            self.reported = true;
+        }
+    }
+}
+
+impl Drop for PageProgress<'_> {
+    fn drop(&mut self) {
+        if let (Some(sink), true) = (self.sink, self.reported) {
+            sink(None);
+        }
+    }
 }
 
 /// Leaves the bearer token out, so a debug print can never leak it.
@@ -162,7 +193,15 @@ impl GraphClient {
             access_token: access_token.into(),
             base_url: Url::parse(GRAPH_V1)?,
             verbose,
+            progress: None,
         })
+    }
+
+    /// Sends the progress of every read that spans several pages to `sink`,
+    /// unless the client is verbose.
+    pub fn with_progress(mut self, sink: ProgressSink) -> Self {
+        self.progress = Some(sink);
+        self
     }
 
     #[doc(hidden)]
@@ -484,9 +523,16 @@ impl GraphClient {
     }
 
     /// Lists every user's summary profile with their manager expanded, in
-    /// one paged read.
-    pub async fn list_users_with_managers(&self) -> Result<Vec<ManagedUser>> {
-        let url = self.list_url(PROFILE_FIELDS, Some(MANAGER_EXPANSION))?;
+    /// one paged read. With `enabled_only`, Graph returns only accounts whose
+    /// `accountEnabled` is `true`. Graph pages expanded reads in far smaller
+    /// pages than plain ones, so leaving out disabled accounts on the server
+    /// saves many sequential requests.
+    pub async fn list_users_with_managers(&self, enabled_only: bool) -> Result<Vec<ManagedUser>> {
+        let mut url = self.list_url(PROFILE_FIELDS, Some(MANAGER_EXPANSION))?;
+        if enabled_only {
+            url.query_pairs_mut()
+                .append_pair("$filter", "accountEnabled eq true");
+        }
         self.get_all_pages(url, None).await.map_err(|error| {
             if error.is_permission() {
                 error.permission("list directory users and their managers")
@@ -727,6 +773,12 @@ impl GraphClient {
     ) -> Result<Vec<T>> {
         let mut values = Vec::new();
         let mut visited = std::collections::HashSet::new();
+        // Verbose request lines would land in the middle of the progress
+        // line, so a verbose client shows only the request lines.
+        let mut progress = PageProgress {
+            sink: self.progress.as_ref().filter(|_| !self.verbose),
+            reported: false,
+        };
         for _ in 0..MAX_PAGES {
             if !visited.insert(url.as_str().to_owned()) {
                 return Err(EntraError::message(
@@ -744,6 +796,7 @@ impl GraphClient {
             let Some(next) = page.next_link else {
                 return Ok(values);
             };
+            progress.report(values.len());
             url = self.validated_next_link(&next)?;
         }
         Err(EntraError::message(format!(
@@ -1707,6 +1760,117 @@ mod tests {
         let error = client(&server).await.list_users().await.unwrap_err();
         assert!(error.is_authorization_failure());
         assert_eq!(error.metadata(), ("Authorization_RequestDenied", 403));
+    }
+
+    #[tokio::test]
+    async fn managed_listing_asks_graph_for_enabled_accounts_only_when_told() {
+        use wiremock::matchers::query_param_is_missing;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION))
+            .and(query_param("$filter", "accountEnabled eq true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "enabled-only"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$expand", MANAGER_EXPANSION))
+            .and(query_param_is_missing("$filter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "everyone"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let graph = client(&server).await;
+        let enabled = graph.list_users_with_managers(true).await.unwrap();
+        let everyone = graph.list_users_with_managers(false).await.unwrap();
+        assert_eq!(enabled[0].user.id, "enabled-only");
+        assert_eq!(everyone[0].user.id, "everyone");
+    }
+
+    /// Serves `/v1.0/users` as two pages of one record each, the second
+    /// answered with `second_status`.
+    async fn two_page_server(second_status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        let second_page = format!("{}/v1.0/users?page=2", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("$top", "999"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "one"}],
+                "@odata.nextLink": second_page
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(second_status).set_body_json(json!({
+                "value": [{"id": "two"}],
+                "error": {"code": "Authorization_RequestDenied", "message": "denied"}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn recording_sink() -> (ProgressSink, Arc<std::sync::Mutex<Vec<Option<usize>>>>) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&events);
+        let sink: ProgressSink = Arc::new(move |count| recorded.lock().unwrap().push(count));
+        (sink, events)
+    }
+
+    #[tokio::test]
+    async fn a_paged_read_reports_its_count_and_then_its_end() {
+        let server = two_page_server(200).await;
+        let (sink, events) = recording_sink();
+        let graph = client(&server).await.with_progress(sink);
+        assert_eq!(graph.list_users().await.unwrap().len(), 2);
+        assert_eq!(*events.lock().unwrap(), vec![Some(1), None]);
+    }
+
+    #[tokio::test]
+    async fn a_paged_read_that_fails_still_reports_its_end() {
+        let server = two_page_server(403).await;
+        let (sink, events) = recording_sink();
+        let graph = client(&server).await.with_progress(sink);
+        assert!(graph.list_users().await.is_err());
+        assert_eq!(*events.lock().unwrap(), vec![Some(1), None]);
+    }
+
+    #[tokio::test]
+    async fn a_verbose_client_reports_no_progress() {
+        let server = two_page_server(200).await;
+        let (sink, events) = recording_sink();
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), true)
+            .unwrap()
+            .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+            .with_progress(sink);
+        assert_eq!(graph.list_users().await.unwrap().len(), 2);
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_one_page_read_reports_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1.0/users"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "only"}]
+            })))
+            .mount(&server)
+            .await;
+        let (sink, events) = recording_sink();
+        let graph = client(&server).await.with_progress(sink);
+        assert_eq!(graph.list_users().await.unwrap().len(), 1);
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

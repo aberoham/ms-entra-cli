@@ -360,16 +360,26 @@ entra user disabled-manager [--include-disabled]
 entra user list --disabled-manager [--include-disabled]
 ```
 
-The two forms are the same check. It reads the whole directory once, with
-each person's manager expanded, and lists the people whose manager's account
+The two forms are the same check. It reads the directory once, with each
+person's manager expanded, and lists the people whose manager's account
 exists and is disabled (`accountEnabled` is `false`). These are the reporting
 lines that need a new manager.
 
 By default people whose own account is disabled are left out: a disabled
-person under a disabled manager usually needs no action. `--include-disabled` lists them too, and the
-`ENABLED` column tells them apart. A person whose enabled state Graph does not
-return is listed, so a gap in the data cannot hide anyone. A manager whose
-enabled state is not returned is not counted as disabled.
+person under a disabled manager usually needs no action. Graph is asked only
+for the accounts it matches as enabled (`$filter=accountEnabled eq true`), so
+an account whose enabled state Graph holds no value for is not read.
+`--include-disabled` reads every account and lists disabled people as well,
+and the `ENABLED` column tells them apart. In either case a returned record
+that leaves out `accountEnabled` is listed, so a gap in the response cannot
+hide anyone. A manager whose enabled state is not returned is not counted as
+disabled.
+
+Graph returns at most 100 people per page when it expands managers, against
+999 otherwise, and the pages arrive one after another, so this is the slowest
+read `entra` makes. Asking for enabled accounts only saves the pages that would
+hold disabled ones, so the default check is faster than `--include-disabled`
+in proportion to how many accounts are disabled.
 
 Rows are ordered by manager, then by name, so each disabled manager's people
 sit together. The table and `--plain` columns are `NAME`, `SIGN-IN NAME`,
@@ -406,6 +416,13 @@ entra user disabled-manager --plain --select "MANAGER SIGN-IN NAME" | sort -u
 
 Each has an `ENTRA_`-prefixed environment variable; see
 [auth.md](auth.md#environment-variables).
+
+A read that spans several pages of Graph results, such as `user list` or
+`user disabled-manager`, shows a running count on standard error, such as
+`Reading from Microsoft Graph: 3000 records so far...`, and erases it when the
+read ends. The count appears only when standard error is a terminal, so pipes,
+logs and JSON output never contain it. `--verbose` turns it off, because the
+request lines it prints would break the progress line.
 
 For user commands without `--account`, the default stored account is tried
 first. Only a typed Graph authorization failure causes `entra` to try another
