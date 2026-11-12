@@ -3550,7 +3550,11 @@ mod tests {
         missing_id.as_object_mut().unwrap().remove("id");
         let mut blank_id = manager_json("Ann", Some(false));
         blank_id["id"] = json!("  ");
-        for manager in [null_id, empty_id, missing_id, blank_id] {
+        let mut dot_id = manager_json("Ann", Some(false));
+        dot_id["id"] = json!(".");
+        let mut dot_dot_id = manager_json("Ann", Some(false));
+        dot_dot_id["id"] = json!("..");
+        for manager in [null_id, empty_id, missing_id, blank_id, dot_id, dot_dot_id] {
             let listing = json!({"value": [managed("Bo", Some(true), manager.clone())]});
             let (server, graph) = succession_server(listing, &[]).await;
             let mut written = Vec::new();
@@ -3564,6 +3568,27 @@ mod tests {
             assert!(written.is_empty(), "{manager}");
             assert_eq!(server.received_requests().await.unwrap().len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn a_listed_disabled_manager_with_a_dot_id_fails_the_check() {
+        // With --include-disabled the listing holds the manager's own record,
+        // so the walk would answer from it without any lookup.
+        let mut dot = managed("Ann", Some(false), Value::Null);
+        dot["id"] = json!("..");
+        let mut manager = manager_json("Ann", Some(false));
+        manager["id"] = json!("..");
+        let listing = json!({"value": [managed("Bo", Some(true), manager), dot]});
+        let (_server, graph) = succession_server(listing, &[]).await;
+        let mut written = Vec::new();
+        let error = run_disabled_manager(&mut written, &json_output(false), &graph, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("without an object id"),
+            "{error}"
+        );
+        assert!(written.is_empty());
     }
 
     #[tokio::test]

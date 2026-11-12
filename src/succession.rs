@@ -36,12 +36,12 @@ pub async fn fill_next_enabled_managers(
 ) -> Result<()> {
     let mut links: ManagerLinks = listing
         .iter()
-        .filter(|person| !person.user.id.is_empty())
+        .filter(|person| is_object_id(&person.user.id))
         .map(|person| (person.user.id.clone(), person.manager.clone()))
         .collect();
     let mut starts = BTreeSet::new();
     for manager in rows.iter().filter_map(|row| row.manager.as_ref()) {
-        if manager.id.trim().is_empty() {
+        if !is_object_id(&manager.id) {
             return Err(missing_id());
         }
         starts.insert(manager.id.clone());
@@ -103,7 +103,7 @@ fn walk(links: &ManagerLinks, start: &str) -> Result<Walk> {
         let Some(manager) = link else {
             return Ok(Walk::Found(None));
         };
-        if manager.id.trim().is_empty() {
+        if !is_object_id(&manager.id) {
             return Err(missing_id());
         }
         match manager.account_enabled {
@@ -117,6 +117,12 @@ fn walk(links: &ManagerLinks, start: &str) -> Result<Walk> {
         current = manager.id.clone();
     }
     Ok(Walk::Found(None))
+}
+
+/// False for the keys `GraphClient::user_url` refuses, which can never name
+/// a directory object: blank, `.` and `..`.
+fn is_object_id(id: &str) -> bool {
+    !matches!(id.trim(), "" | "." | "..")
 }
 
 fn missing_id() -> EntraError {
@@ -223,8 +229,10 @@ mod tests {
 
     #[test]
     fn walk_refuses_a_manager_without_an_object_id() {
-        let links = links(&[("a", Some(summary("", Some(true))))]);
-        assert!(walk(&links, "a").is_err());
+        for id in ["", "  ", ".", ".."] {
+            let links = links(&[("a", Some(summary(id, Some(true))))]);
+            assert!(walk(&links, "a").is_err(), "{id:?}");
+        }
     }
 
     /// A line from `p0` up to `p{enabled_level}`, the only enabled account.
