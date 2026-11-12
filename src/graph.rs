@@ -197,7 +197,8 @@ impl GraphClient {
         })
     }
 
-    /// Sends the progress of every read that spans several pages to `sink`.
+    /// Sends the progress of every read that spans several pages to `sink`,
+    /// unless the client is verbose.
     pub fn with_progress(mut self, sink: ProgressSink) -> Self {
         self.progress = Some(sink);
         self
@@ -772,8 +773,10 @@ impl GraphClient {
     ) -> Result<Vec<T>> {
         let mut values = Vec::new();
         let mut visited = std::collections::HashSet::new();
+        // Verbose request lines would land in the middle of the progress
+        // line, so a verbose client shows only the request lines.
         let mut progress = PageProgress {
-            sink: self.progress.as_ref(),
+            sink: self.progress.as_ref().filter(|_| !self.verbose),
             reported: false,
         };
         for _ in 0..MAX_PAGES {
@@ -1840,6 +1843,18 @@ mod tests {
         let graph = client(&server).await.with_progress(sink);
         assert!(graph.list_users().await.is_err());
         assert_eq!(*events.lock().unwrap(), vec![Some(1), None]);
+    }
+
+    #[tokio::test]
+    async fn a_verbose_client_reports_no_progress() {
+        let server = two_page_server(200).await;
+        let (sink, events) = recording_sink();
+        let graph = GraphClient::new("test-token", Duration::from_secs(2), true)
+            .unwrap()
+            .with_base_url(Url::parse(&format!("{}/v1.0/", server.uri())).unwrap())
+            .with_progress(sink);
+        assert_eq!(graph.list_users().await.unwrap().len(), 2);
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

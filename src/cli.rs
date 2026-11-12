@@ -890,6 +890,17 @@ struct DisabledManagerArgs {
     include_disabled: bool,
 }
 
+impl DisabledManagerArgs {
+    async fn run(
+        &self,
+        writer: impl Write,
+        output: &OutputOptions,
+        graph: &GraphClient,
+    ) -> Result<()> {
+        run_disabled_manager(writer, output, graph, self.include_disabled).await
+    }
+}
+
 #[derive(Debug, Clone, Args)]
 struct UserGet {
     #[arg(value_name = "UPN|EMAIL|ID|NAME", value_parser = person_key_arg, help = PERSON_HELP, long_help = PERSON_LONG_HELP)]
@@ -1641,9 +1652,7 @@ async fn run_user(
             let found = graph.search_users(&query, top).await?;
             write_users(io::stdout(), output, &found)
         }
-        UserCommand::DisabledManager(args) => {
-            run_disabled_manager(io::stdout(), output, graph, args.include_disabled).await
-        }
+        UserCommand::DisabledManager(args) => args.run(io::stdout(), output, graph).await,
         UserCommand::List(list) => run_user_list(io::stdout(), output, graph, &list).await,
     }
 }
@@ -2058,14 +2067,7 @@ async fn graph_client_for_account(
         .await
         .map_err(|error| error.context(format!("getting credentials for {}", account.email)))?;
     let graph = GraphClient::new(token, Duration::from_secs(cli.timeout), cli.verbose)?;
-    // Verbose request lines would land in the middle of the progress line,
-    // so a verbose run shows only the request lines.
-    let progress = if cli.verbose {
-        None
-    } else {
-        terminal_progress()
-    };
-    Ok(match progress {
+    Ok(match terminal_progress() {
         Some(sink) => graph.with_progress(sink),
         None => graph,
     })
@@ -3008,6 +3010,17 @@ mod tests {
         }
     }
 
+    fn disabled_manager_args(args: &[&str]) -> DisabledManagerArgs {
+        let cli =
+            Cli::try_parse_from(["entra", "user", "disabled-manager"].iter().chain(args)).unwrap();
+        match cli.command {
+            Command::User(UserArgs {
+                command: UserCommand::DisabledManager(parsed),
+            }) => parsed,
+            other => panic!("parsed {other:?}"),
+        }
+    }
+
     fn json_output(results_only: bool) -> OutputOptions {
         OutputOptions {
             format: OutputFormat::Json,
@@ -3291,7 +3304,8 @@ mod tests {
             if include_disabled {
                 flag_args.push("--include-disabled");
             }
-            run_disabled_manager(Vec::new(), &json_output(false), &graph, include_disabled)
+            disabled_manager_args(&flag_args[1..])
+                .run(Vec::new(), &json_output(false), &graph)
                 .await
                 .unwrap();
             run_user_list(
@@ -4988,6 +5002,10 @@ mod tests {
         );
         assert_eq!(
             columns_of(&["user", "list", "--disabled-manager"], false),
+            Some(columns::MANAGED_USERS)
+        );
+        assert_eq!(
+            columns_of(&["user", "disabled-manager"], false),
             Some(columns::MANAGED_USERS)
         );
         assert_eq!(
