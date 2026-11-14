@@ -1,10 +1,16 @@
 name: CI
 
 on:
+  # Pushes to main and pull requests run CI, so a pull request branch runs it
+  # once, not twice. Tags are excluded because the release workflow calls this
+  # one itself. Changes to Markdown and docs/ alone skip it: no job in this
+  # workflow reads them, and no rule on main requires this check. The release
+  # workflow still packages docs/ and smoke-tests it on every tag.
   push:
-    # Tags are excluded because the release workflow calls this one itself.
-    branches: ["**"]
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
   workflow_call:
 
 permissions:

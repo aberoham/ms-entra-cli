@@ -46,8 +46,8 @@ Ben Ortiz     ben.ortiz@example.com  yes      Engineering  Sam Taylor  sam@examp
 
 Release builds cover macOS (Apple silicon and Intel, Developer ID signed and
 notarized), Linux (x86-64 and Arm64, statically linked) and Windows (x86-64).
-Every pull request runs the continuous integration (CI) test suite on Linux,
-macOS and Windows. Every release smoke-tests each archive. The Windows binary
+Every pull request that changes more than documentation runs the continuous
+integration (CI) test suite on Linux, macOS and Windows. Every release smoke-tests each archive. The Windows binary
 is not code-signed. The maintainer uses macOS, so Windows is tested only by
 CI; Windows reports are welcome as
 [issues](https://github.com/aberoham/ms-entra-cli/issues).
