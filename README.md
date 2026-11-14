@@ -37,9 +37,9 @@ systems of record that feed the directory, not in a lookup tool.
 
 ```text
 NAME          SIGN-IN NAME           ENABLED  DEPARTMENT   MANAGER     MANAGER SIGN-IN NAME  NEXT ENABLED MANAGER  NEXT ENABLED SIGN-IN NAME
+Priya Nair    priya@example.com      yes      Finance      Robin Hall  robin@example.com     Morgan Chen           morgan@example.com
 Alice Carter  alice@example.com      yes      Engineering  Sam Taylor  sam@example.com       Dana Lee              dana@example.com
 Ben Ortiz     ben.ortiz@example.com  yes      Engineering  Sam Taylor  sam@example.com       Dana Lee              dana@example.com
-Priya Nair    priya@example.com      yes      Finance      Robin Hall  robin@example.com     Morgan Chen           morgan@example.com
 ```
 
 ## Platforms
@@ -48,8 +48,9 @@ Release builds cover macOS (Apple silicon and Intel, Developer ID signed and
 notarized), Linux (x86-64 and Arm64, statically linked) and Windows (x86-64).
 Every pull request runs the continuous integration (CI) test suite on Linux,
 macOS and Windows. Every release smoke-tests each archive. The Windows binary
-is not code-signed. Day-to-day use has been on macOS, so Windows reports are
-welcome as [issues](https://github.com/aberoham/ms-entra-cli/issues).
+is not code-signed. The maintainer uses macOS, so Windows is tested only by
+CI; Windows reports are welcome as
+[issues](https://github.com/aberoham/ms-entra-cli/issues).
 
 ## Why it exists
 
