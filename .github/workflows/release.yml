@@ -118,7 +118,8 @@ jobs:
           cp "target/${TARGET}/release/entra" "dist/${package}/bin/entra"
           cp README.md LICENSE NOTICE "dist/${package}/share/doc/entra/"
           cp -R docs "dist/${package}/share/doc/entra/docs"
-          # Homebrew users on macOS re-sign after each upgrade with this.
+          # For source builds. Signed releases must not be re-signed; see
+          # docs/troubleshooting.md.
           cp contrib/resign.sh "dist/${package}/share/doc/entra/contrib/"
           tar czf "${package}.tar.gz" -C dist "${package}"
 
