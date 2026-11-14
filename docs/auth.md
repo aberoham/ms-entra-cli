@@ -1,171 +1,202 @@
 # Authentication and permissions
 
-This guide takes you from nothing to a working `entra user get` in your own
-Microsoft Entra ID directory. It explains the app registration the tool signs
-in through, the delegated Microsoft Graph permissions each command needs, how
-to sign in, and where tokens are stored.
+`entra` requires an app registration in your own Microsoft Entra ID directory.
+It uses delegated Microsoft Graph permissions to inspect users, email
+addresses, reporting lines, group memberships, licences and Copilot usage
+reports without modifying directory data.
 
-The short version: **this tool exists because of one permission.** Reading
-another person's manager needs delegated `User.Read.All`, an
-administrator-consent permission that covers the whole directory. Keeping that
-grant on a small read-only tool, rather than on a chat or mail client, means it
-can be reviewed, assigned and revoked on its own.
+Reading another person's manager requires delegated `User.Read.All`. That
+permission needs administrator consent and covers the whole directory. Keeping
+the grant on a separate read-only tool rather than on a chat or mail client
+lets administrators review, assign and revoke it independently.
 
 ## Before you start
 
-`entra` does not ship with an app registration. Every organisation that uses it
-creates its own, in its own directory. This section explains why.
+`entra` does not ship with a built-in app registration. Every organisation
+creates its own registration in its own directory.
 
-An **app registration** is the record in Microsoft Entra ID that identifies an
-application during sign-in. It carries an **application (client) ID**, the
-permissions the application may request, and the addresses Microsoft may send
-a sign-in response to. When you register an application, Entra ID also creates
-an **enterprise application** (a service principal) in the same directory. The
-enterprise application controls who may use the app and records the consent
-that an administrator granted.
+An **app registration** identifies the application during sign-in. It defines
+an **application (client) ID**, the permissions the application may request,
+and the redirect addresses Microsoft accepts. Registering the application also
+creates an **enterprise application** (service principal) in the same
+directory. The enterprise application records administrator consent and
+controls which users or groups may sign in through the app.
 
-`entra` is a **public client**. It runs on your computer, so it cannot keep a
-secret. It therefore uses no client secret and no certificate. Sign-in uses the
-OAuth 2.0 device authorization grant ("device code") or the authorization code
-flow with Proof Key for Code Exchange (PKCE). Both flows need only the client
-ID and the directory (tenant) ID, and neither ID is a secret.
+`entra` is a **public client**. Because it runs on user workstations, it holds
+no client secret and no certificate. Sign-in uses the Open Authorization
+(OAuth) 2.0 device authorization grant ("device code") or the authorization
+code flow with Proof Key for Code Exchange (PKCE). Both flows require only the
+application (client) ID and the directory (tenant) ID. Neither identifier is a
+secret.
 
-You need:
+Before setting up the registration, confirm you have:
 
-- A Microsoft Entra ID directory, and its **directory (tenant) ID**.
-- A role that can register applications. By default any member user can; if
-  your organisation has turned that off, you need Application Developer or a
-  higher role.
-- A role that can grant tenant-wide admin consent to delegated Microsoft Graph
-  permissions: Cloud Application Administrator, Application Administrator or
-  Privileged Role Administrator.
+- A Microsoft Entra ID directory and its **directory (tenant) ID** (a
+  universally unique identifier, UUID).
+- A role permitted to register applications. Microsoft Entra allows member
+  users to register applications by default. If your organisation restricts
+  registration, you need Application Developer or a higher role.
+- A role permitted to grant tenant-wide administrator consent for delegated
+  Microsoft Graph permissions, such as Cloud Application Administrator,
+  Application Administrator or Privileged Role Administrator.
 - The `entra` binary. See the [README](../README.md#install).
 
 ## Delegated permissions, and what each one allows
 
-`entra` uses delegated permissions only. A delegated permission lets the tool
-act as the signed-in person, so it can never read more than that person could.
+`entra` requests delegated permissions. Delegated access runs as the signed-in
+user, within the limits of Microsoft Graph's permission and role checks for
+that account.
 
-| Permission | Admin consent | Needed by | What it lets the tool read |
-|---|---|---|---|
-| `User.Read` | No | `entra whoami`; every sign-in | Your own profile |
-| `offline_access` | No | Every command after the first hour | Nothing; it issues a refresh token so you do not sign in every hour |
-| `User.ReadBasic.All` | No | `entra user search`, basic `entra user get` | Display name, given name, surname, mail, sign-in name, object ID and photo for every user |
-| `User.Read.All` | **Yes** | `entra user manager`, `user reports`, `user chain`, `user list`, `user disabled-manager`, the full record in `user get`, `--all` and `--group` | Every user's full profile and their manager and direct-report relationships |
-| `AuditLog.Read.All` | **Yes** | `--sign-in-activity` on `user get` and `user list` only | Sign-in activity, and more generally the directory's audit and sign-in logs |
-| `User-LifeCycleInfo.Read.All` | **Yes** | The `employeeLeaveDateTime` value in `--all` and the `organisation` group | Every user's lifecycle dates, including the scheduled leave date |
-| `GroupMember.Read.All` | **Yes** | `entra user groups` | Every group's basic properties and its membership |
-| `LicenseAssignment.Read.All` | **Yes** | `entra licences list`, a licence name in `licences holders --sku` | The tenant's subscribed licences and every user's licence assignments |
-| `Reports.Read.All` | **Yes** | `entra reports copilot-usage`, `copilot-summary` and `copilot-trend` | Every Microsoft 365 usage report, including per-person activity |
-| `ReportSettings.Read.All` | **Yes** | `entra reports settings` | The tenant's report settings, such as whether names are concealed |
+| Permission | Admin consent | Requested by | Needed by | Microsoft Graph access |
+|---|---|---|---|---|
+| `User.Read` | No | Every sign-in | `entra whoami`; sign-in `/me` check | Read the signed-in user's profile |
+| `offline_access` | No | Every sign-in | Token renewal and `entra auth refresh` | Issue refresh tokens so you do not sign in again when the access token needs renewal |
+| `User.ReadBasic.All` | No | Every sign-in | `entra user search`; basic `entra user get` | Read display name, given name, surname, mail, sign-in name, object ID and photo for all users |
+| `User.Read.All` | Yes | `--directory`, `--lifecycle`, `--groups`, `--licences`, `--reports` | `user manager`, `user reports`, `user chain`, `user list`, `user disabled-manager`, full `user get`, `--all`, `--group` | Read all users' full profiles, manager relationships and direct reports |
+| `AuditLog.Read.All` | Yes | `--directory` | `--sign-in-activity` and `--group signinactivity` on `user get` and `user list` | Read directory audit and sign-in logs, including `signInActivity` |
+| `User-LifeCycleInfo.Read.All` | Yes | `--lifecycle` | `employeeLeaveDateTime` in `--all` and `--group organisation` | Read users' lifecycle dates, including scheduled leave dates |
+| `GroupMember.Read.All` | Yes | `--groups` | `entra user groups` | Read all groups' basic properties and memberships |
+| `LicenseAssignment.Read.All` | Yes | `--licences` | `entra licences list`; licence names in `licences holders --sku` | Read subscribed stock-keeping units (SKUs) and user licence assignments |
+| `Reports.Read.All` | Yes | `--reports` | `entra reports copilot-usage`, `copilot-summary`, `copilot-trend` | Read Microsoft 365 usage reports, including per-user activity |
+| `ReportSettings.Read.All` | Yes | `--reports` | `entra reports settings` | Read tenant report settings, such as whether user names are concealed |
 
-`entra auth login --directory` requests the first five. Without `--directory`,
-the tool requests only the first three. `--lifecycle` adds
-`User-LifeCycleInfo.Read.All` (and `User.Read.All`), `--groups` adds
-`GroupMember.Read.All` (and `User.Read.All`), `--licences` adds
-`LicenseAssignment.Read.All` (and `User.Read.All`), and `--reports` adds
-`Reports.Read.All` and `ReportSettings.Read.All` (and `User.Read.All`). All
-four combine with `--directory`.
+Note: Microsoft defines which permissions require administrator consent and
+what each scope allows. Tenant policies can also restrict user consent.
 
-The tool does not request `Directory.Read.All`, `Group.Read.All` or any write
-permission. It cannot change a directory object.
+With no scope flags, `entra auth login` requests `offline_access`, `User.Read`
+and `User.ReadBasic.All`. Adding `--directory` also requests `User.Read.All`
+and `AuditLog.Read.All`. The flags `--lifecycle`, `--groups`, `--licences` and
+`--reports` each add `User.Read.All` plus their feature-specific scope or
+scopes. All four combine with `--directory`.
 
-### Sign-in activity has extra requirements
+The built-in scope flags do not request `Directory.Read.All`, `Group.Read.All`
+or any write permission. However, `auth login` and `auth refresh` accept
+arbitrary `--scope` values without a read-only allowlist. The setup script
+likewise accepts custom `SCOPES`. Every Graph request that `entra` sends uses
+HTTP `GET`, so its directory commands remain read-only.
 
-`AuditLog.Read.All` alone is not enough for `--sign-in-activity`. Microsoft
-also requires:
+`AuditLog.Read.All` grants read access to all tenant sign-in and audit logs,
+not only one user property. If you do not want that grant, omit
+`AuditLog.Read.All` from `SCOPES` when running the setup script. Then sign in
+without `--directory` by passing `--scope User.Read.All`.
 
-- a **Microsoft Entra ID P1 or P2 licence** in the tenant, and
-- a supported Entra role on the **signed-in account**. **Reports Reader** is
-  the least-privileged built-in choice.
+`--lifecycle`, `--groups`, `--licences` and `--reports` stay outside
+`--directory` because requesting an unconsented permission typically causes
+sign-in or refresh to fail. Keeping them separate lets `--directory` work in
+tenants that consented only to `User.Read.All` and `AuditLog.Read.All`.
 
-Without these, Graph fails the whole request. For this reason the
-`signInActivity` field is opt-in per query, and `entra` retries a full-record
-`user get` without it. `user list` does not: it fails, so that an export never
-silently lacks a column it was asked for. The attribute is also empty for
-anyone who has never signed in, or whose last sign-in was before April 2020.
+### Sign-in activity requirements and fallback
 
-### The leave date needs its own permission and a role
+Request sign-in activity with `--sign-in-activity` or `--group signinactivity`
+on `user get` and `user list`. Both forms have the same permission
+requirements. According to Microsoft documentation, reading `signInActivity`
+requires `AuditLog.Read.All` plus:
 
-`employeeLeaveDateTime`, in `--all` and the `organisation` group, is populated
-only when the token holds `User-LifeCycleInfo.Read.All` and the signed-in
-account holds Lifecycle Workflows Administrator, Global Reader or Global
-Administrator. Without either, Graph still answers the request and returns the
-field as `null`, so an empty leave date proves nothing on its own. Sign in (or
-refresh) with `--lifecycle` once an administrator has consented:
+- A **Microsoft Entra ID P1 or P2** licence in the tenant.
+- A supported Microsoft Entra role on the **signed-in account**. **Reports
+  Reader** is the least-privileged built-in role.
+
+When Microsoft Graph rejects a request that includes `signInActivity` with a
+typed permission or unsupported-role error, `entra` handles it as follows:
+
+- Without `--account`, `user` commands first retry the full request across any
+  other stored accounts.
+- If `user get` ran with `--sign-in-activity` together with `--all` or
+  `--group`, and no tried account is permitted, `entra` warns on standard
+  error and retries the read without `--sign-in-activity`.
+- Standalone `user get --sign-in-activity` does not use that omission
+  fallback. Neither does `user list`, or a request that selects sign-in
+  activity only through `--group signinactivity`. Those commands fail so
+  focused queries and directory exports never omit requested data.
+
+`signInActivity` is absent for accounts with no recorded sign-ins. Microsoft
+documents different start dates per timestamp. Interactive sign-in history
+(`lastSignInDateTime`, which records interactive attempts including failures)
+begins in April 2020. Non-interactive history
+(`lastNonInteractiveSignInDateTime`) begins in May 2020.
+`lastSuccessfulSignInDateTime` became available in December 2023 without
+backfill for earlier sign-ins.
+
+### Scheduled leave dates
+
+`employeeLeaveDateTime` (included in `--all` and `--group organisation`)
+requires delegated `User-LifeCycleInfo.Read.All` and a supported role on the
+signed-in account. Supported roles include Lifecycle Workflows Administrator,
+Global Reader and Global Administrator. Microsoft Graph can return the user
+record with `employeeLeaveDateTime` set to `null` when lifecycle access is
+missing, so a `null` value alone does not prove that no leave date is
+scheduled.
+
+After an administrator grants consent, add the scope to your session:
 
 ```bash
 entra auth refresh --directory --lifecycle
 ```
 
-The permission is opt-in rather than part of `--directory` because a login
-that asks for an unconsented permission fails outright, which would break
-`--directory` in every directory that has not granted it.
+### Group memberships
 
-### Group memberships need their own permission
+`entra user groups` reads `memberOf` and `transitiveMemberOf`. Microsoft
+documents that with `User.Read.All` alone, Microsoft Graph returns limited
+membership objects containing only object IDs and types, without group display
+names. `entra` requires `GroupMember.Read.All` to read group properties. It
+treats any returned group with an empty display name as a permission error
+rather than printing nameless rows.
 
-`user groups` reads `memberOf` and `transitiveMemberOf`. With `User.Read.All`
-alone, Graph answers those requests but strips each group to its id and type,
-so the tool needs `GroupMember.Read.All` to name the groups. It reports a
-nameless group as a permission error rather than printing it. Once an
-administrator has consented, refresh with the flag; the scopes already held
-are kept:
+After an administrator grants consent, add the scope:
 
 ```bash
 entra auth refresh --groups
 ```
 
-Like `--lifecycle`, it stays outside `--directory` because a login that asks
-for an unconsented permission fails outright.
+### Tenant licences
 
-### Licence names need their own permission and a role
+`entra licences list` reads `/subscribedSkus`. `entra licences holders --sku
+<name>` also reads `/subscribedSkus` when given a licence name rather than a
+UUID SKU ID. Microsoft documents that delegated callers need
+`LicenseAssignment.Read.All` and a supported directory role on the signed-in
+account, such as Directory Readers or Global Reader. Passing a SKU ID (UUID)
+to `licences holders --sku` skips `/subscribedSkus` and requires only
+`User.Read.All`. Because a 403 refusal on `/subscribedSkus` can reflect either
+a missing scope or a missing role, `entra` names both in its error message.
 
-`licences list`, and `licences holders` given a licence name, read the
-tenant's subscribed licences. That needs `LicenseAssignment.Read.All` and, on
-the signed-in account, a role such as Directory Readers or Global Reader.
-Graph returns the same refusal for a missing permission and a missing role, so
-the error names both. `licences holders` given a SKU id skips that read and
-needs only `User.Read.All`. Once an administrator has consented, refresh with
-the flag; the scopes already held are kept:
+After an administrator grants consent, add the scope:
 
 ```bash
 entra auth refresh --licences
 ```
 
-It stays outside `--directory` for the same reason as `--lifecycle`.
+### Copilot usage reports
 
-### Usage reports need their own permissions and a role
+The `entra reports` commands read Microsoft 365 Copilot usage reports from
+Microsoft Graph's beta `/copilot/reports` routes and `/admin/reportSettings`
+on v1.0. `copilot-usage`, `copilot-summary` and `copilot-trend` require
+`Reports.Read.All`. `reports settings` requires `ReportSettings.Read.All`.
+Microsoft's documentation for `/copilot/reports` lists AI Administrator and
+Reports Reader as supported roles, and omits Global Reader for per-user
+Copilot usage detail. Because report endpoints return HTTP 403 (with codes
+such as `S2SUnauthorized`) for both missing scopes and missing roles, `entra`
+reports both possibilities together.
 
-The `reports` commands read Microsoft 365 usage reports. That needs
-`Reports.Read.All`, or `ReportSettings.Read.All` for `reports settings`, and,
-on the signed-in account, a role that may read usage reports, such as Reports
-Reader or AI Administrator (Global Reader cannot read the per-person
-`copilot-usage` report). Graph refuses a missing permission
-and a missing role the same way, with HTTP 403 and a code such as
-`S2SUnauthorized`, so the error names both. `reports copilot-usage` also reads
-every user's company, which needs `User.Read.All`. Once an administrator has
-consented, refresh with the flag; the scopes already held are kept:
+`reports copilot-usage` also reads users' `companyName` and `department` from
+`/users` (requiring `User.Read.All`) when at least one returned report row has
+an unconcealed identity. Empty reports or reports where every row has a
+concealed user name skip that directory read.
+
+After an administrator grants consent, add the report scopes:
 
 ```bash
 entra auth refresh --reports
 ```
 
-It stays outside `--directory` for the same reason as `--lifecycle`.
-
-`AuditLog.Read.All` grants read access to all of the tenant's sign-in and audit
-logs, not just one field. If you do not need sign-in activity, leave it out:
-set `SCOPES` without it when you run the setup script, and sign in without
-`--directory` but with `--scope User.Read.All`.
-
 ### Which fields need `User.Read.All`
 
-`User.ReadBasic.All` returns only this set for other people: `id`,
-`displayName`, `givenName`, `surname`, `mail`, `userPrincipalName`,
-`securityIdentifier` and the photo. See
-[Working with users in Microsoft Graph](https://learn.microsoft.com/en-us/graph/api/resources/users).
+According to [Working with users in Microsoft Graph](https://learn.microsoft.com/en-us/graph/api/resources/users),
+`User.ReadBasic.All` limits reads of other users to `id`, `displayName`,
+`givenName`, `surname`, `mail`, `userPrincipalName` and `photo` (Microsoft's
+user profile documentation also notes `securityIdentifier` in basic contexts).
 
-Everything else `entra user get` prints, in its summary or with `--all` and
-`--group`, needs `User.Read.All`, including:
+Other user properties that `entra user get` requests in summary mode or with
+`--all` and `--group` require `User.Read.All`, including:
 
 ```text
 jobTitle            officeLocation      businessPhones
@@ -175,38 +206,58 @@ proxyAddresses      otherMails          mailNickname
 onPremisesSamAccountName                usageLocation
 ```
 
-`proxyAddresses` is the property most people look for. It is the only reliable
-way to find out whether two email addresses belong to one mailbox or to two.
+`proxyAddresses` lists the email aliases configured on a user's directory
+record. Inspecting it shows whether two addresses belong to one directory user
+object or two.
 
 ### There is no primaryEmail or secondaryEmail
 
-Those property names come from Google Workspace and do not exist in Microsoft
-Graph. Asking for them returns nothing, which looks like a permissions problem
-but is not one. The equivalents are:
+`primaryEmail` and `secondaryEmail` are Google Workspace property names. They
+do not exist on the Microsoft Graph `user` resource, so looking for them in
+Graph output finds nothing even when `User.Read.All` is granted. Microsoft
+Graph stores user addresses across these properties:
 
-| Property | What it holds | Permission |
+| Property | Directory meaning | Permission |
 |---|---|---|
-| `mail` | The primary address | `User.ReadBasic.All` |
-| `userPrincipalName` | The sign-in name, which need not receive mail | `User.ReadBasic.All` |
-| `proxyAddresses` | Every address on the mailbox; `SMTP:` in upper case is primary, `smtp:` in lower case is an alias | `User.Read.All` |
-| `otherMails` | Addresses recorded against the person but not on the mailbox, usually personal or recovery addresses | `User.Read.All` |
-| `mailNickname` | The mail alias, that is, the local part | `User.Read.All` |
+| `mail` | Primary Simple Mail Transfer Protocol (SMTP) address recorded on the user | `User.ReadBasic.All` |
+| `userPrincipalName` | User principal name (UPN), the sign-in name; often uses email syntax, though it need not receive mail | `User.ReadBasic.All` |
+| `proxyAddresses` | Mailbox proxy addresses recorded in the directory; uppercase `SMTP:` marks the primary address and lowercase `smtp:` marks an alias | `User.Read.All` |
+| `otherMails` | Additional email addresses recorded on the user object outside `proxyAddresses`, typically external or recovery addresses | `User.Read.All` |
+| `mailNickname` | Mail alias (local part) | `User.Read.All` |
 
-`entra user get` prints mailbox addresses and other addresses under separate
-headings. A proxy address delivers to the mailbox you are looking at. An entry
-in `otherMails` usually delivers somewhere else, often to a personal account.
+`entra user get` prints `proxyAddresses` under `Mailbox addresses:` and
+`otherMails` under `Other addresses:`. That keeps mailbox aliases separate
+from external contact addresses. Actual mail delivery depends on your mail
+routing configuration.
 
 ## Create the app registration
 
-Choose one of the two methods below. Both produce the same result.
+Register the application with either the included setup script or the
+Microsoft Entra admin center.
 
 ### Method 1: the setup script
 
-`contrib/create-entra-app.sh` does the whole sequence: registration, service
-principal, API permissions, admin consent and user assignment. It needs the
-[Azure command-line interface](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
-(`az`) and Bash, and must run as a person who holds the roles listed in
-[Before you start](#before-you-start).
+`contrib/create-entra-app.sh` creates or updates the app registration, creates
+or reuses its enterprise application (service principal), adds delegated
+Microsoft Graph permissions, restricts assignment when requested, and grants
+tenant-wide admin consent.
+
+Prerequisites:
+
+- Bash and the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) (`az`).
+- An active `az login` session in the target tenant, signed in with the roles
+  listed in [Before you start](#before-you-start). The script checks `az
+  account show` and exits if the active Azure CLI tenant does not match
+  `TENANT_ID`.
+- `jq`, if you rely on automatic discovery of a saved `TENANT_ID` or
+  `CLIENT_ID` from `entra`'s `config.json`. Saved-ID discovery matches
+  `ENTRA_ACCOUNT` (or `default_account`) against canonical keys in
+  `config.json`, ignoring case. It looks in macOS
+  (`~/Library/Application Support/entra`) or X Desktop Group (XDG)
+  (`${XDG_CONFIG_HOME:-$HOME/.config}/entra`) paths. On Windows Bash, set
+  `ENTRA_CONFIG_DIR` explicitly or pass `TENANT_ID` and `CLIENT_ID`.
+
+Run the script for a new registration:
 
 ```bash
 export TENANT_ID=<tenant-id>
@@ -214,119 +265,134 @@ az login --tenant "$TENANT_ID"
 ASSIGN_USERS="you@example.com" ./contrib/create-entra-app.sh
 ```
 
-At the end it prints the new application (client) ID and the exact
-`entra auth login` command to run next.
+At completion, the script prints the application (client) ID, a verification
+command and the `entra auth login` command to run next.
 
-#### Why the script requires an assignment
+#### Assignment requirements and access control
 
-**The script refuses to run without a user or group assignment** unless you set
-`ALLOW_ALL_TENANT_USERS=1`. Admin consent is granted for the whole
-organisation. An app that holds `User.Read.All` and has no assignment is a
-directory-wide read that any user in the tenant can sign in and use.
+Tenant-wide admin consent applies to the application across the directory. If
+an enterprise application does not require user assignment, ordinary users in
+the tenant can sign in through it and exercise consented delegated scopes such
+as `User.Read.All`.
 
-When you give `ASSIGN_USERS` or `GROUP_OBJECT_ID`, the script sets
-**Assignment required** on the enterprise application and assigns only those
-principals. Other users then cannot sign in through the app, and get
-`AADSTS50105` if they try.
+To prevent accidental tenant-wide exposure, the script refuses to run unless
+at least one of these conditions holds:
 
-`ALLOW_ALL_TENANT_USERS=1` lets the script run without an assignment. It does
-not change **Assignment required**. On a new app that setting is off, so every
-user in the tenant can sign in and read the full directory through the app. On
-an app that already requires assignment, the restriction stays in place. Use
-it only if that is what you want.
+- You set `ASSIGN_USERS` or `GROUP_OBJECT_ID`.
+- You update an existing registration (`CLIENT_ID`) whose service principal
+  already has `appRoleAssignmentRequired=true`.
+- You set `ALLOW_ALL_TENANT_USERS=1`.
 
-The script sets **Assignment required** before it grants admin consent. A run
-that stops part way therefore never leaves a consented app open to every
-user.
+How assignment settings behave:
 
-The script understands these variables:
+- When `ASSIGN_USERS` or `GROUP_OBJECT_ID` is set, the script sets
+  `appRoleAssignmentRequired=true` on the service principal **before**
+  granting admin consent. It then adds app-role assignments (using the default
+  all-zero `appRoleId`) for the supplied principals. Existing user or group
+  assignments on the service principal remain in place; the supplied variables
+  add principals rather than replacing the current access list.
+- Unassigned regular users receive `AADSTS50105` when they try to sign in.
+  Microsoft Entra exempts certain directory roles, such as Global
+  Administrator, from `appRoleAssignmentRequired` enforcement; see Microsoft's
+  guide on [restricting an app to a set of users](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users).
+- When `ALLOW_ALL_TENANT_USERS=1` is set without `ASSIGN_USERS` or
+  `GROUP_OBJECT_ID`, the script leaves `appRoleAssignmentRequired` unchanged.
+  On a newly created app, `appRoleAssignmentRequired` defaults to `false`, so
+  any tenant user can sign in. On an app that already requires assignment,
+  that restriction stays enabled.
+
+#### Script environment variables
 
 | Variable | Effect |
 |---|---|
-| `TENANT_ID` | The directory the app is created in. Falls back to `ENTRA_TENANT_ID`, then to the tenant saved by the last `entra auth login`. |
-| `CLIENT_ID` | An existing registration to update in place. Falls back to `ENTRA_CLIENT_ID`, then to the saved client ID; when none is known, the script creates a new registration named `APP_NAME`, even if one with that name exists. |
-| `APP_NAME` | Display name; defaults to "Entra CLI (read-only directory lookups)". |
-| `SCOPES` | Space-separated scope list; defaults to every permission in the table above. |
-| `GROUP_OBJECT_ID` | Assign a group, and require assignment. |
-| `ASSIGN_USERS` | Space-separated sign-in names to assign, and require assignment. |
-| `ALLOW_ALL_TENANT_USERS=1` | Allow any tenant user. Not the default. |
+| `TENANT_ID` | Target directory (tenant) UUID. Falls back to `ENTRA_TENANT_ID`, then to the tenant saved in `config.json` (`common` is rejected). |
+| `CLIENT_ID` | Existing application (client) ID to update. Falls back to `ENTRA_CLIENT_ID`, then to the client ID saved in `config.json`. When unset, the script creates a new app registration even if another registration already has `APP_NAME`. |
+| `APP_NAME` | Display name for a newly created registration. Defaults to `Entra CLI (read-only directory lookups)`. |
+| `SCOPES` | Space-separated Microsoft Graph delegated permission names to resolve and add. Defaults to all ten permissions in the table above. |
+| `GROUP_OBJECT_ID` | Group object UUID to assign, and enable `appRoleAssignmentRequired=true`. |
+| `ASSIGN_USERS` | Space-separated UPNs or user object IDs to assign, and enable `appRoleAssignmentRequired=true`. |
+| `ALLOW_ALL_TENANT_USERS=1` | Permit running without `ASSIGN_USERS` or `GROUP_OBJECT_ID` when the app is not already restricted; leaves `appRoleAssignmentRequired` unchanged. |
 
 #### Running the script again
 
-After the first successful `entra auth login`, running the script again needs
-no IDs: it reads the saved tenant and client ID from `entra`'s `config.json`
-(for `ENTRA_ACCOUNT`, else the default account; this needs `jq`) and updates
-that exact registration, even if it was given another name. A registration
-that already requires assignment needs no new assignment variables, so adding
-a permission is one command:
+After you sign in once with `entra auth login`, `config.json` holds the
+account's `client_id` and `tenant_id`. On macOS and Linux with `jq` installed
+(or with `ENTRA_CONFIG_DIR` set on Windows), re-running the script updates
+that registration in place without needing `CLIENT_ID` or `TENANT_ID`. If the
+service principal already requires assignment, you do not need to pass
+assignment variables again:
 
 ```bash
 ./contrib/create-entra-app.sh
 entra auth refresh --directory --lifecycle
 ```
 
-The script is safe to run again, for example to assign another person. It
-patches the existing registration instead of creating a duplicate, reuses the
-service principal, skips principals that are already assigned, and grants
-admin consent again without harm.
+Re-runs are additive, not declarative:
 
-A sign-in name that does not resolve is reported and skipped, so one typing
-error does not stop the other assignments:
-
-```bash
-ASSIGN_USERS="alice@example.com bob@example.com" ./contrib/create-entra-app.sh
-```
-
-Use each person's **sign-in name** (user principal name), which is often not
-their email address. `az ad user show --id <name> --query userPrincipalName -o
-tsv` prints it.
+- The script queries Microsoft Graph's service principal
+  (`00000003-0000-0000-c000-000000000000`) dynamically for each scope name's
+  permission UUID and adds missing delegated scopes. Removing a scope from
+  `SCOPES` does not remove it from the app registration or revoke existing
+  consent grants.
+- Removing a user or group from `ASSIGN_USERS` or `GROUP_OBJECT_ID` does not
+  delete their existing assignment. Already-assigned principals are skipped.
+- When updating an existing `CLIENT_ID`, the script does not modify the
+  registration's display name, sign-in audience, redirect URIs or
+  `isFallbackPublicClient` setting.
+- Each entry in `ASSIGN_USERS` is looked up with `az ad user show --id`, which
+  accepts a UPN or object ID. Because a person's UPN can differ from their
+  email address, check it with `az ad user show --id <upn-or-id> --query
+  userPrincipalName -o tsv`. Unresolved users print a warning and are skipped
+  without making the script exit non-zero. Other `az rest` assignment errors
+  abort the script.
 
 ### Method 2: the Microsoft Entra admin center
 
-1. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com).
-   Go to **Entra ID > App registrations > New registration**.
-2. Enter a name, for example "Entra CLI (read-only directory lookups)".
+1. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com)
+   and open **Entra ID > App registrations > New registration**.
+2. Enter a display name, such as `Entra CLI (read-only directory lookups)`.
 3. Under **Supported account types**, select **Accounts in this organizational
    directory only** (single tenant).
 4. Under **Redirect URI**, select **Public client/native (mobile & desktop)**
    and enter `http://localhost/callback`. Select **Register**.
 
-   The browser sign-in listens on a random local port and sends
-   `http://localhost:<port>/callback`. Entra ID ignores the port when it
-   matches a `localhost` redirect URI, so the single entry above covers every
-   port.
-5. On the **Overview** page, copy the **Application (client) ID** and the
-   **Directory (tenant) ID**. You need both to sign in.
-6. Go to **Authentication**. Under **Advanced settings**, set **Allow public
-   client flows** to **Yes**, then select **Save**. Device code sign-in needs
+   Browser sign-in binds a random loopback port on `127.0.0.1` and sends
+   `http://localhost:<port>/callback`. Microsoft Entra ignores the port when
+   matching `http://localhost` redirect URIs on public clients, so one entry
+   covers any port.
+5. On **Overview**, copy **Application (client) ID** and **Directory (tenant)
+   ID**.
+6. Open **Authentication**. Under **Advanced settings**, set **Allow public
+   client flows** to **Yes** and select **Save**. Device-code sign-in requires
    this setting.
-7. Go to **API permissions > Add a permission > Microsoft Graph > Delegated
-   permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All`,
-   `User.Read.All`, `AuditLog.Read.All`, `User-LifeCycleInfo.Read.All`,
-   `GroupMember.Read.All`, `LicenseAssignment.Read.All`, `Reports.Read.All`
-   and `ReportSettings.Read.All`. Leave out `AuditLog.Read.All` if you do not
-   need sign-in activity, `User-LifeCycleInfo.Read.All` if you do not need
-   leave dates, `GroupMember.Read.All` if you do not need group memberships,
-   `LicenseAssignment.Read.All` if you do not need to look up licences by name,
-   and the two report permissions if you do not need usage reports.
-8. Select **Grant admin consent for \<your organisation\>** and confirm. The
-   **Status** column must show a green tick for every permission.
-   `User.Read.All` and `AuditLog.Read.All` do not work until this is done.
-9. Go to **Entra ID > Enterprise apps**, and open the application with the
-   same name. Under **Properties**, set **Assignment required?** to **Yes** and
-   select **Save**.
-10. Under **Users and groups**, select **Add user/group** and add the people
-    or groups who may use the tool.
+7. Open **API permissions > Add a permission > Microsoft Graph > Delegated
+   permissions**. Add `User.Read`, `offline_access`, `User.ReadBasic.All` and
+   `User.Read.All`, plus any optional scopes your users need:
+   `AuditLog.Read.All` (sign-in activity), `User-LifeCycleInfo.Read.All`
+   (scheduled leave dates), `GroupMember.Read.All` (`user groups`),
+   `LicenseAssignment.Read.All` (`licences list` and SKU names), and
+   `Reports.Read.All` with `ReportSettings.Read.All` (`reports`).
+8. To restrict who may use the app before granting tenant-wide consent, open
+   **Entra ID > Enterprise applications** and select the application with the
+   same name. Under **Properties**, set **Assignment required?** to **Yes**
+   and select **Save**.
+9. Under **Users and groups** on that enterprise application, select **Add
+   user/group** and assign the users or groups permitted to run `entra`.
+10. Return to the app registration's **API permissions** page, select **Grant
+    admin consent for \<your organisation\>** and confirm. Every required
+    permission should show granted status.
 
-The consent dialog says the grant applies to all users in your organisation.
-That describes what the app may read; the assignment in steps 9 and 10
-controls who can use it.
+The admin-consent prompt states that consent applies to all users in the
+organisation. Setting **Assignment required?** to **Yes** and assigning
+specific users or groups restricts who can sign in (subject to Microsoft
+Entra's Global Administrator exemption).
 
 ### Adding a permission to an existing registration
 
-To add `AuditLog.Read.All` (for example) to an app you already have, use the
-Microsoft Graph application ID and the permission's ID. Both are the same in
-every tenant:
+To add a single Microsoft Graph permission with Azure CLI, pass the published
+Microsoft Graph application ID (`00000003-0000-0000-c000-000000000000`) and
+the delegated scope ID (for example `e4c9e354-4dc5-45b8-9e7c-e1393b0b1a20` for
+`AuditLog.Read.All`). Then grant admin consent and refresh:
 
 ```bash
 az ad app permission add \
@@ -339,49 +405,77 @@ entra auth refresh --directory
 
 ### Check that consent was granted
 
+List the delegated permission grants recorded in Entra ID:
+
 ```bash
 az ad app permission list-grants \
   --id <application-client-id> \
   --show-resource-name -o table
 ```
 
-A test with the tool itself is better:
+Then test with `entra`, pinning `--account` so `user manager` cannot switch to
+another signed-in identity:
 
 ```bash
-entra auth status
-entra user manager someone-else@example.com
+entra --account you@example.com auth status
+entra --account you@example.com user manager someone-else@example.com
 ```
 
-If `auth status` succeeds and `user manager` fails, the sign-in worked but
-`User.Read.All` was not consented.
+If `auth status` succeeds, the selected identity's token can read `/me`. A
+failure on `user manager` does not automatically prove missing admin consent:
+inspect the actual error code, the scopes requested at sign-in, the target
+user and the account used. Without `--account`, `user` commands can also
+switch to another stored identity on authorization refusals.
 
 ## Sign in
 
-Use the two IDs from the app registration. `entra` has no registration of its
-own. At login it takes the client ID from, in order:
+Sign in with `entra auth login` using your registration's client ID and tenant
+ID.
 
-1. `--client-id`, or the `ENTRA_CLIENT_ID` environment variable;
-2. the registration saved at an earlier login for the account named by
-   `--account`, or else for the default account;
-3. the registration every saved account shares, when they all use one.
+### Registration resolution and ID validation
 
-The tenant ID follows the same order through `--tenant-id` and
-`ENTRA_TENANT_ID`, and falls back to the `common` endpoint, which a
-single-tenant app rejects. The first sign-in therefore needs both IDs; signing
-in again, for example after a password reset revokes the stored token, needs
-neither. Login prints the registration and tenant it is about to use on
-standard error, naming the saved account when it reuses one, so a stale value
-is visible.
+At `auth login`, `entra` resolves the client ID in this order:
 
-The IDs are saved in `config.json` in the configuration directory, not in the
-operating-system keyring with the token, so the arrangement is the same on
-macOS, Linux and Windows. Neither ID is a secret. An organisation can also set
-both variables for its staff, through a shell profile or device management.
-Commands after login read the IDs saved with the account and ignore the
-variables.
+1. `--client-id`, or `ENTRA_CLIENT_ID`.
+2. The registration saved in `config.json` for `--account` (matched
+   case-insensitively against canonical stored account emails only, without
+   `/me` alias lookups), or else for `default_account`.
+3. The single registration shared by every entry in `config.json`, when all
+   saved entries have the same client ID and tenant ID. If saved accounts use
+   different registrations, `entra` fails and asks for `--client-id` or
+   `--account`.
 
-Device code is the default. The tool prints a code and a web address; open the
-address on any device, enter the code and choose the account:
+The tenant ID resolves in this order:
+
+1. `--tenant-id`, or `ENTRA_TENANT_ID`.
+2. When `--client-id` was given explicitly: the tenant saved for `--account`
+   (or `default_account`) if that entry used the same client ID, or else the
+   single tenant shared by all saved entries for that client ID. If that
+   client ID is saved against multiple tenants, `entra` fails and asks for
+   `--tenant-id` or `--account`.
+3. When reusing a saved client ID: that entry's saved tenant ID.
+4. `common` (which single-tenant app registrations reject with `AADSTS50194`).
+
+Validation rules:
+
+- Client IDs must parse as UUIDs.
+- Tenant IDs must parse as UUIDs or equal `common`, `organizations` or
+  `consumers`. Tenant domain names such as `example.com` are rejected.
+- `--no-input` (or `ENTRA_NO_INPUT=true`) rejects `auth login` before
+  authentication starts because both login flows are interactive.
+
+`auth login` prints the chosen client ID and tenant ID (and the saved account
+name when reusing one) to standard error before starting authentication. After
+sign-in succeeds, both IDs are saved in `config.json` and in the account file.
+Later logins, token refreshes and Graph commands do not need `--client-id`,
+`--tenant-id` or the environment variables. Post-login commands read the IDs
+saved for the selected account and ignore `ENTRA_CLIENT_ID` and
+`ENTRA_TENANT_ID`.
+
+### Device-code and browser flows
+
+Device-code sign-in is the default. It uses PKCE, prints a verification URL
+and user code on standard error, and suits headless or remote machines:
 
 ```bash
 entra auth login --directory \
@@ -389,8 +483,14 @@ entra auth login --directory \
   --tenant-id <tenant-id>
 ```
 
-`--browser` opens the system browser instead, and uses the authorization code
-flow with PKCE and a local callback:
+Device polling clamps the server interval to 1-120 seconds and expiry to at
+most 3600 seconds. It backs off on `slow_down` and suggests retrying with
+`--browser` if Microsoft returns `access_denied` or `invalid_grant` (for
+example when Conditional Access blocks device-code flows or requires a
+compliant device).
+
+Pass `--browser` to use the authorization code flow with PKCE and a loopback
+listener on `127.0.0.1`:
 
 ```bash
 entra auth login --browser --directory \
@@ -398,136 +498,260 @@ entra auth login --browser --directory \
   --tenant-id <tenant-id>
 ```
 
-`--browser` always shows Microsoft's account picker, so it does not silently
-reuse the account already signed in to the browser. Device code is the better
-choice on a remote or headless machine, or to sign in as an account that is
-not your browser session.
+`--browser` sends `prompt=select_account` so Microsoft shows its account
+picker rather than silently reusing an active browser session. It prints the
+authorization URL on standard error if the system browser cannot open, waits
+up to 15 minutes for the loopback callback, and validates the OAuth `state`
+parameter before accepting a code or reporting a callback error. OAuth HTTP
+requests use a fixed 30-second per-request timeout; `--timeout` and
+`ENTRA_TIMEOUT` apply only to Microsoft Graph requests.
 
-After sign-in, check which account landed:
+When sign-in finishes, `entra` reads `/me` and stores the account under
+lowercase `mail`, falling back to lowercase `userPrincipalName` when `mail` is
+empty. Confirm the stored account with:
 
 ```bash
 entra auth list
 entra whoami
 ```
 
-`--directory` requests `User.Read.All` and `AuditLog.Read.All`. With no scope
-flags the sign-in works, but only `whoami`, `user search` and the basic
-`user get` fields are available. `--lifecycle`, `--groups`, `--licences` and
-`--reports` each bring `User.Read.All` too, which is enough for manager and
-full-profile reads but not for sign-in activity. The tool prints a reminder when you sign in without it. Extra
-scopes can be added with repeatable `--scope` flags. They merge with the
-defaults, and duplicates are removed without regard to case.
-
-The client ID and tenant ID are saved with the account, so later commands and
-refreshes do not need them again.
+If you sign in without `--directory`, `entra` prints a reminder that full
+directory and sign-in-activity lookups need `--directory`. Add extra scopes
+with repeatable `--scope <SCOPE>` flags; `entra` trims whitespace and removes
+case-insensitive duplicates.
 
 ### Selecting among stored identities
 
-You can sign in with more than one account. `entra auth list` shows the
-primary email address used to store each one. `--account` accepts that
-address, the sign-in name, or any proxy address that belongs to the same
-identity:
+You can store multiple signed-in accounts at once. Account selection and
+fallback follow these rules:
+
+- **Default account:** `auth login` sets `default_account` in `config.json`
+  only when `default_account` is empty or does not match any stored account
+  file. Subsequent logins preserve an existing valid default. When no valid
+  default exists, selection starts with the first stored account in
+  case-insensitive email order.
+- **Privilege fallback (`user` commands only):** When `--account` is omitted,
+  `entra user` commands try the default account first. If Microsoft Graph
+  returns a typed permission or sign-in-activity role refusal, `entra` writes
+  a `notice:` line to standard error and tries the remaining stored accounts
+  in case-insensitive email order. Network, timeout and data errors never
+  switch accounts.
+- **Single-account commands:** `licences`, `reports`, `whoami`, `auth status`
+  and `auth refresh` use one selected account (the default or `--account`) and
+  never fall back. When a `licences` or `reports` command is refused under the
+  default account, the error suggests `--account <email>`.
+- **Explicit `--account`:** For commands that use stored credentials,
+  `--account` (or `ENTRA_ACCOUNT`) pins execution to that selected identity
+  and disables fallback. During `auth login`, `--account` selects saved
+  registration metadata in `config.json`; it does not constrain which identity
+  authenticates in the browser or device-code prompt.
+
+How `--account` resolves an identifier against stored credentials:
+
+1. If the identifier matches a stored account's canonical email
+   case-insensitively, `entra` selects it locally without network calls.
+2. Otherwise, `entra` reads `/me` for stored accounts and compares the
+   identifier case-insensitively against `mail`, `userPrincipalName` and the
+   address part of `proxyAddresses`. It never matches on display names.
+3. A single `/me` match is selected even if another stored account could not
+   be inspected. Multiple matches fail as ambiguous. If no match is found, the
+   error lists the stored accounts and any accounts whose profiles were
+   unavailable. Windows credential-lock errors (`CredentialLockBusy`,
+   `CredentialLockFailed`) are returned directly rather than treated as an
+   unmatched account.
 
 ```bash
 entra --account alex.smith@login.example.test whoami
 ```
 
-An explicit `--account` is strict: the tool uses only that credential. Without
-`--account`, user lookups try the default account first. They move to another
-stored account only after Graph returns a typed permission or role refusal, and
-say so on standard error. A normal account can therefore coexist with a
-separate administrator identity without making every command run as the
-administrator.
-
-The tool matches identities only on fields that Graph returns. It never guesses
-from display names or similar-looking addresses, and a network or data error
-never causes a switch to another account.
-
 ### Adding scopes without signing in again
 
-After an administrator consents to another delegated permission, redeem the
-stored refresh token for it without opening a browser:
+After an administrator consents to a new permission, run `entra auth refresh`
+to redeem the stored refresh token non-interactively (`auth refresh` remains
+available when `--no-input` is set):
 
 ```bash
 entra auth refresh --directory
 ```
 
-**A refresh only ever adds scopes.** With no flags it asks again for the
-scopes stored with the token. With flags it asks for the flagged scopes *and*
-every stored scope, so `entra auth refresh --licences` keeps
-`AuditLog.Read.All` and any other permission the session already had. A
-refresh never narrows a session; to drop a permission, sign in again with
-`entra auth login` and only the flags you want.
+`auth refresh` accepts `--directory`, `--lifecycle`, `--groups`, `--licences`,
+`--reports` and repeatable `--scope <SCOPE>`:
 
-Microsoft rejects the whole refresh if any requested scope, stored or new, has
-not been consented. If an administrator has since withdrawn consent for a
-stored scope, a refresh fails until you sign in again without it.
+```bash
+entra auth refresh --scope User.Read.All
+```
+
+**Refresh is strictly additive.** With no scope flags, it requests the scopes
+stored with the token. With flags, it strips any
+`https://graph.microsoft.com/` prefix from stored scopes and merges the
+requested scopes with every stored scope case-insensitively. Refresh never
+narrows a session. To request fewer scopes, run `entra auth login` with only
+the flags you want (note that Microsoft Entra may still return previously
+consented scopes in issued tokens unless grants are revoked).
+
+Microsoft Entra rejects the refresh if any requested or stored scope lacks
+consent. If an administrator withdraws consent for a stored scope, run
+`entra auth login` again without it.
+
+### Signing out
+
+Remove a stored account's local credential and account file with:
+
+```bash
+entra auth logout
+entra auth logout jane.doe@example.com
+```
+
+`auth logout` chooses the account in this order: positional `ACCOUNT`, then
+`--account` (or `ENTRA_ACCOUNT`), then the default account. Alias lookup works
+the same way as `--account`.
+
+Logout deletes the credential from the operating system (OS) store and removes
+`accounts/<lowercase-email>.json`. Removing the current `default_account`
+moves `default_account` to the first remaining stored account in
+case-insensitive email order, or clears it when none remain. Logout does not
+revoke Microsoft sessions or remove saved registration entries from
+`config.json`.
 
 ## Token storage
 
-Tokens are stored only in the operating system's credential store, under the
-service name **`entra`** and the key `entra:token:<email>`. They are never
-written to a file. The name is distinct from other Microsoft Graph tools, so
-signing in here does not overwrite their tokens.
+Tokens live only in the OS credential store under service name **`entra`** and
+key `entra:token:<lowercase-email>`. Here `<lowercase-email>` is the lowercase
+`mail` (or lowercase `userPrincipalName` when `mail` is empty) from `/me`.
+Tokens are never written to plain files, and the service name stays separate
+from other Microsoft Graph tools.
 
-| Platform | Store | Notes |
+| Platform | Credential store | Behaviour |
 |---|---|---|
-| macOS | Keychain (login keychain) | One item per account, labelled `entra — <email>` and described as a Microsoft Entra ID access token. Refresh updates the item in place, which keeps its access-control list. |
-| Windows | Credential Manager | An item holds at most 2560 bytes, which is smaller than many token bundles. The main item holds a small header, and numbered items such as `entra:token:<email>:0` hold the pieces. Each update writes a fresh set of pieces before switching the header, so a failed update leaves the previous sign-in intact. A lock file, `%LOCALAPPDATA%\entra\credentials.lock`, lets only one `entra` process on the machine read or change the pieces at a time. The lock covers one machine; if your Windows credentials roam between machines, two machines refreshing at the same moment are not serialised. Logout removes every piece. |
-| Linux | The kernel's key-retention service (keyutils) | One item per account, held in memory only. A reboot removes it, and the kernel expires it after a period without use, so expect to sign in again. It needs no desktop session. See [troubleshooting](troubleshooting.md#could-not-be-found-in-the-keyring). |
+| macOS | Login Keychain | One generic-password item per account, carrying an account-specific `entra` label and description `Microsoft Entra ID access token`. Updates modify the item and metadata in place so Keychain access-control lists (ACLs) remain intact. |
+| Windows | Credential Manager | Because Credential Manager limits a single blob to 2560 bytes, `entra` splits each token across several entries and serialises access with a per-user lock file (`%LOCALAPPDATA%\entra\credentials.lock`). |
+| Linux | Kernel key-retention service (`keyutils`) | One entry per account in kernel memory only (not Secret Service). Entries need no desktop session, do not survive a reboot, and expire after kernel inactivity timeouts; see [troubleshooting](troubleshooting.md#could-not-be-found-in-the-keyring). |
 
-On macOS, the Keychain ties an "Always Allow" grant to the program's code
-signature. A new binary, whether rebuilt or upgraded, asks again. See
-[troubleshooting](troubleshooting.md#macos-keychain-prompts-after-every-upgrade)
-to make the grant persist.
+Platform details:
 
-Non-secret account metadata (the client ID, tenant ID and default account) is
-in an `entra` directory under the platform's configuration directory:
+- **macOS item label and code signing:** Keychain items carry an
+  account-specific label, `entra — <lowercase-email>`, and the description
+  "Microsoft Entra ID access token", so authorization prompts identify both
+  the CLI and the account.
+  Keychain "Always Allow" grants are tied to the binary's code-signing
+  identity. Official releases from `v0.1.1` onward use a stable Developer ID
+  signature (`com.aberoham.entra`, team `2VLHJGU477`), so grants can survive
+  upgrades. Local `cargo build` binaries use ad-hoc signatures that change on
+  every build and can trigger new prompts; use `./contrib/resign.sh` or
+  `./contrib/install.sh` for source builds (see
+  [troubleshooting](troubleshooting.md#macos-keychain-prompts-after-every-upgrade)).
+  `--no-input` does not suppress OS credential-store authorization dialogs.
+- **Windows lock and update guarantees:** The exclusive lock file is per OS
+  user, covers Credential Manager reads, writes and deletes, and is released
+  before network refresh calls. It stays under `%LOCALAPPDATA%\entra\` even
+  when `ENTRA_CONFIG_DIR` moves config files. Contention times out after 10
+  seconds with `CredentialLockBusy`; failures finding, creating, opening or
+  locking the file return `CredentialLockFailed`. The lock covers one machine
+  only and does not serialise roaming credentials across machines. During
+  writes, failures before the header entry switches preserve the previous
+  credential; after the header switches, the new credential is live, though a
+  failure while deleting old entries still makes the operation return an
+  error.
 
-| Platform | Location |
+### Configuration and account metadata files
+
+Non-secret metadata is stored under the platform configuration directory
+(override with `ENTRA_CONFIG_DIR`):
+
+| Platform | Default configuration directory |
 |---|---|
 | macOS | `~/Library/Application Support/entra/` |
-| Linux | `$XDG_CONFIG_HOME/entra/`, usually `~/.config/entra/` |
+| Linux | `$XDG_CONFIG_HOME/entra/` (usually `~/.config/entra/`) |
 | Windows | `%APPDATA%\entra\` |
 
-On Unix-like systems the directories are created with mode `0700`. Set
-`ENTRA_CONFIG_DIR` to use a different location.
+Metadata files:
 
-Access tokens are reused until they are close to expiry. If a background
-refresh fails for a transient reason, the tool uses the still-valid access
-token until it expires. An explicit `auth refresh` treats any failure as an
-error.
+- `config.json`: holds `default_account` and the `clients` map of `client_id`
+  and `tenant_id` per account. Loading `config.json` rejects symlinks and, on
+  Unix-like systems, repairs file permissions broader than `0600`.
+- `accounts/<lowercase-email>.json`: holds `email`, `display_name`,
+  `tenant_id`, `client_id` and `login_time` for each signed-in account.
+
+On Unix-like systems, directories are created with mode `0700` and metadata
+files are written atomically with mode `0600`.
+
+### Token renewal and fallback
+
+Commands reuse the stored access token until 60 seconds before its recorded
+expiry (`expires_at`). When background refresh runs:
+
+- If background refresh fails for any reason, `entra` reuses the existing
+  access token while its recorded expiry has not passed (logged in
+  `--verbose` output). Once hard-expired, the command fails.
+- If refresh succeeds on the network but saving to the credential store fails,
+  the current command uses the newly issued token and reports the persistence
+  failure only in `--verbose` output.
+- Explicit `entra auth refresh` requires both the network refresh and
+  credential-store persistence to succeed.
 
 ## Diagnostics
 
+Check saved accounts, live token validity and request details with:
+
 ```bash
-entra auth list            # which accounts have tokens, and which is default
-entra auth status          # is the active token usable right now
-entra whoami               # what the directory thinks you are
-entra --verbose <command>  # request detail on standard error
+entra auth list            # list saved account metadata (* marks default)
+entra auth status          # test the selected account's token against /me
+entra whoami               # show the directory profile of the selected account
+entra --verbose <command>  # print Graph URLs and OAuth steps on standard error
 ```
 
-`auth status` makes a real Graph call. A token that parses is not the same as a
-token the directory still accepts.
+`auth list` enumerates saved `accounts/*.json` metadata only. It does not
+check whether credentials still exist in the OS store or whether Microsoft
+Entra still accepts them (important after a Linux reboot or keyring expiry).
+Use `auth status` to perform a live Microsoft Graph `/me` call.
+
+### JSON output and error codes
+
+All `auth` commands honour `--json`, returning `{"results": ..., "count":
+...}` (or the inner value alone with `--results-only`):
+
+- `auth login --json`: `{"account", "displayName", "tenantId", "clientId"}`
+  (`displayName` honours `--wrap-untrusted`).
+- `auth refresh --json`: `{"account", "expiresAt", "scope"}`.
+- `auth logout --json`: `{"account", "signedOut": true}`.
+- `auth list --json`: array of `{"email", "display_name", "tenant_id",
+  "client_id", "login_time"}` objects.
+- `auth status --json`: the `whoami` user profile in `results`, with
+  `"account"` and `"expiresAt"` (the actual expiry of the token used, even if
+  persistence failed) added to the envelope.
+
+In `--json` mode, errors print `{"error": {"code": ..., "status": ...,
+"message": ...}}` on standard output and exit `1`:
+
+| Error code | Meaning |
+|---|---|
+| `Authorization_RequestDenied` | HTTP 403 missing-permission error classified by `entra` |
+| `Authentication_RequestFromUnsupportedUserRole` | HTTP 403 unsupported Entra role for `signInActivity` |
+| `CredentialLockBusy` | Windows `credentials.lock` timed out after 10 seconds (`status` 0) |
+| `CredentialLockFailed` | Windows `credentials.lock` could not be found, opened or locked (`status` 0) |
+| Preserved Graph or OAuth code | Server error code (such as `invalid_grant` or `S2SUnauthorized`) with HTTP status |
+| `CommandFailed` | Local validation, keyring or wrapped error (`status` 0); `consent_required` / `AADSTS65001` on `auth refresh` is converted to `CommandFailed` with remedial guidance |
 
 ## Environment variables
 
-| Variable | Equivalent flag |
-|---|---|
-| `ENTRA_CLIENT_ID` | `auth login --client-id` |
-| `ENTRA_TENANT_ID` | `auth login --tenant-id` |
-| `ENTRA_ACCOUNT` | `--account` |
-| `ENTRA_JSON` | `--json` |
-| `ENTRA_PLAIN` | `--plain` |
-| `ENTRA_SELECT` | `--select` |
-| `ENTRA_RESULTS_ONLY` | `--results-only` |
-| `ENTRA_TIMEOUT` | `--timeout` |
-| `ENTRA_VERBOSE` | `--verbose` |
-| `ENTRA_COLOR` | `--color` |
-| `ENTRA_NO_WRITE` | `--no-write` |
-| `ENTRA_NO_INPUT` | `--no-input` |
-| `ENTRA_WRAP_UNTRUSTED` | `--wrap-untrusted` |
-| `ENTRA_CONFIG_DIR` | none (configuration location) |
+Every global flag and login ID flag has an environment variable equivalent:
+
+| Variable | Equivalent flag | Notes |
+|---|---|---|
+| `ENTRA_CLIENT_ID` | `auth login --client-id` | Read by `auth login` and `create-entra-app.sh`; ignored by post-login commands |
+| `ENTRA_TENANT_ID` | `auth login --tenant-id` | Read by `auth login` and `create-entra-app.sh`; ignored by post-login commands |
+| `ENTRA_ACCOUNT` | `--account` | Selects stored identity (or saved registration at `auth login`); also read by `create-entra-app.sh` |
+| `ENTRA_JSON` | `--json` | Boolean (`true` or `false`) |
+| `ENTRA_PLAIN` | `--plain` | Tab-separated or plain output |
+| `ENTRA_SELECT` | `--select` | Comma-separated table or `--plain` column names |
+| `ENTRA_RESULTS_ONLY` | `--results-only` | Omit the `{results, count}` JSON envelope |
+| `ENTRA_TIMEOUT` | `--timeout` | Per-request Microsoft Graph timeout in seconds (`0` means `60`, max `600`); OAuth HTTP requests use a fixed 30-second timeout |
+| `ENTRA_VERBOSE` | `--verbose` | Print request and authentication steps on standard error |
+| `ENTRA_COLOR` | `--color` | Accepts `auto`, `never` or `always`; output is not coloured |
+| `ENTRA_NO_WRITE` | `--no-write` | Guards against directory mutations; does not stop `auth login`, `auth refresh` or `auth logout` from updating local credentials and metadata |
+| `ENTRA_NO_INPUT` | `--no-input` | Rejects `auth login` before authentication starts; `auth refresh` stays available; does not suppress OS credential-store dialogs |
+| `ENTRA_WRAP_UNTRUSTED` | `--wrap-untrusted` | Mark directory free text with `[UNTRUSTED:<id>]` wrappers in typed JSON output |
+| `ENTRA_CONFIG_DIR` | none | Override directory for `config.json` and `accounts/`; does not move OS keyring items or Windows `credentials.lock` |
 
 ## Microsoft references
 
@@ -535,11 +759,17 @@ token the directory still accepts.
 - [Redirect URI restrictions, including localhost ports](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url)
 - [Grant tenant-wide admin consent](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent)
 - [Restrict an application to a set of users](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users)
+- [Access tokens in the Microsoft identity platform](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens)
+- [Microsoft Graph permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference)
 - [User.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#userreadall)
 - [AuditLog.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#auditlogreadall)
 - [GroupMember.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#groupmemberreadall)
 - [LicenseAssignment.Read.All in the permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#licenseassignmentreadall)
+- [Working with users in Microsoft Graph](https://learn.microsoft.com/en-us/graph/api/resources/users)
+- [User resource type properties](https://learn.microsoft.com/en-us/graph/api/resources/user)
+- [signInActivity resource type](https://learn.microsoft.com/en-us/graph/api/resources/signinactivity)
+- [Roles allowed to read sign-in activity](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph#common-errors)
 - [List subscribed licences, with the roles a delegated caller needs](https://learn.microsoft.com/en-us/graph/api/subscribedsku-list)
 - [List a user's direct memberships](https://learn.microsoft.com/en-us/graph/api/user-list-memberof)
-- [Roles allowed to read sign-in activity](https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-analyze-activity-logs-with-microsoft-graph#common-errors)
 - [List a user's manager](https://learn.microsoft.com/en-us/graph/api/user-list-manager)
+- [Get Microsoft 365 Copilot usage user detail](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/admin-settings/reports/copilotreportroot-getmicrosoft365copilotusageuserdetail)
