@@ -17,9 +17,10 @@ creates its own registration in its own directory.
 
 An **app registration** identifies the application during sign-in. It defines
 an **application (client) ID**, the permissions the application may request,
-and the redirect addresses Microsoft accepts. Registering the application also
-creates an **enterprise application** (service principal) in the same
-directory. The enterprise application records administrator consent and
+and the redirect addresses Microsoft accepts. Registering the application in
+the admin center also creates an **enterprise application** (service
+principal) in the same directory; the setup script creates or reuses it
+explicitly. The enterprise application records administrator consent and
 controls which users or groups may sign in through the app.
 
 `entra` is a **public client**. Because it runs on user workstations, it holds
@@ -122,10 +123,10 @@ backfill for earlier sign-ins.
 `employeeLeaveDateTime` (included in `--all` and `--group organisation`)
 requires delegated `User-LifeCycleInfo.Read.All` and a supported role on the
 signed-in account. Supported roles include Lifecycle Workflows Administrator,
-Global Reader and Global Administrator. Microsoft Graph can return the user
-record with `employeeLeaveDateTime` set to `null` when lifecycle access is
-missing, so a `null` value alone does not prove that no leave date is
-scheduled.
+Global Reader and Global Administrator. Before reading a `null` leave date
+as "no leave date scheduled", check that the permission was consented and
+that the signed-in account holds one of those roles. Microsoft documents
+those prerequisites but not what Graph returns without them.
 
 After an administrator grants consent, add the scope to your session:
 
@@ -212,9 +213,9 @@ object or two.
 
 ### There is no primaryEmail or secondaryEmail
 
-`primaryEmail` and `secondaryEmail` are Google Workspace property names. They
-do not exist on the Microsoft Graph `user` resource, so looking for them in
-Graph output finds nothing even when `User.Read.All` is granted. Microsoft
+The Microsoft Graph `user` resource has neither `primaryEmail` nor
+`secondaryEmail`, so looking for them in Graph output finds nothing even when
+`User.Read.All` is granted. Microsoft
 Graph stores user addresses across these properties:
 
 | Property | Directory meaning | Permission |
@@ -222,12 +223,12 @@ Graph stores user addresses across these properties:
 | `mail` | Primary Simple Mail Transfer Protocol (SMTP) address recorded on the user | `User.ReadBasic.All` |
 | `userPrincipalName` | User principal name (UPN), the sign-in name; often uses email syntax, though it need not receive mail | `User.ReadBasic.All` |
 | `proxyAddresses` | Mailbox proxy addresses recorded in the directory; uppercase `SMTP:` marks the primary address and lowercase `smtp:` marks an alias | `User.Read.All` |
-| `otherMails` | Additional email addresses recorded on the user object outside `proxyAddresses`, typically external or recovery addresses | `User.Read.All` |
+| `otherMails` | Additional email addresses recorded for the user | `User.Read.All` |
 | `mailNickname` | Mail alias (local part) | `User.Read.All` |
 
 `entra user get` prints `proxyAddresses` under `Mailbox addresses:` and
-`otherMails` under `Other addresses:`. That keeps mailbox aliases separate
-from external contact addresses. Actual mail delivery depends on your mail
+`otherMails` under `Other addresses:`, displaying the two directory
+properties separately. Actual mail delivery depends on your mail
 routing configuration.
 
 ## Create the app registration
@@ -292,8 +293,8 @@ How assignment settings behave:
   assignments on the service principal remain in place; the supplied variables
   add principals rather than replacing the current access list.
 - Unassigned regular users receive `AADSTS50105` when they try to sign in.
-  Microsoft Entra exempts certain directory roles, such as Global
-  Administrator, from `appRoleAssignmentRequired` enforcement; see Microsoft's
+  Microsoft documents that the assignment requirement does not apply to
+  Global Administrators; see Microsoft's
   guide on [restricting an app to a set of users](https://learn.microsoft.com/en-us/entra/identity-platform/howto-restrict-your-app-to-a-set-of-users).
 - When `ALLOW_ALL_TENANT_USERS=1` is set without `ASSIGN_USERS` or
   `GROUP_OBJECT_ID`, the script leaves `appRoleAssignmentRequired` unchanged.
@@ -327,13 +328,16 @@ assignment variables again:
 entra auth refresh --directory --lifecycle
 ```
 
-Re-runs are additive, not declarative:
+Permission declarations and assignments are additive on a re-run: removing
+an entry from an input variable does not delete it. The script grants admin
+consent again on every run, and Microsoft warns that granting tenant-wide
+consent can change existing tenant-wide grants, so check the grants afterwards
+(see [Check that consent was granted](#check-that-consent-was-granted)).
 
 - The script queries Microsoft Graph's service principal
   (`00000003-0000-0000-c000-000000000000`) dynamically for each scope name's
   permission UUID and adds missing delegated scopes. Removing a scope from
-  `SCOPES` does not remove it from the app registration or revoke existing
-  consent grants.
+  `SCOPES` does not remove it from the app registration.
 - Removing a user or group from `ASSIGN_USERS` or `GROUP_OBJECT_ID` does not
   delete their existing assignment. Already-assigned principals are skipped.
 - When updating an existing `CLIENT_ID`, the script does not modify the
@@ -470,12 +474,15 @@ sign-in succeeds, both IDs are saved in `config.json` and in the account file.
 Later logins, token refreshes and Graph commands do not need `--client-id`,
 `--tenant-id` or the environment variables. Post-login commands read the IDs
 saved for the selected account and ignore `ENTRA_CLIENT_ID` and
-`ENTRA_TENANT_ID`.
+`ENTRA_TENANT_ID`. Administrators can distribute `ENTRA_CLIENT_ID` and
+`ENTRA_TENANT_ID` to users through shell profiles or device management, so the
+first sign-in needs no flags.
 
 ### Device-code and browser flows
 
-Device-code sign-in is the default. It uses PKCE, prints a verification URL
-and user code on standard error, and suits headless or remote machines:
+Device-code sign-in is the default. It prints a verification URL and a user
+code on standard error. Open that URL in a browser, on this or any other
+device, enter the code and sign in. It suits headless or remote machines:
 
 ```bash
 entra auth login --directory \
@@ -502,9 +509,10 @@ entra auth login --browser --directory \
 picker rather than silently reusing an active browser session. It prints the
 authorization URL on standard error if the system browser cannot open, waits
 up to 15 minutes for the loopback callback, and validates the OAuth `state`
-parameter before accepting a code or reporting a callback error. OAuth HTTP
-requests use a fixed 30-second per-request timeout; `--timeout` and
-`ENTRA_TIMEOUT` apply only to Microsoft Graph requests.
+parameter before accepting a code or reporting a callback error. OAuth
+requests, and the `/me` request that completes sign-in, use a fixed 30-second
+timeout; `--timeout` and `ENTRA_TIMEOUT` apply to the Microsoft Graph requests
+that commands make.
 
 When sign-in finishes, `entra` reads `/me` and stores the account under
 lowercase `mail`, falling back to lowercase `userPrincipalName` when `mail` is
@@ -647,8 +655,10 @@ Platform details:
   when `ENTRA_CONFIG_DIR` moves config files. Contention times out after 10
   seconds with `CredentialLockBusy`; failures finding, creating, opening or
   locking the file return `CredentialLockFailed`. The lock covers one machine
-  only and does not serialise roaming credentials across machines. During
-  writes, failures before the header entry switches preserve the previous
+  only and does not serialise roaming credentials across machines. The token
+  is split into numbered chunks; the canonical entry holds a header pointing
+  to the chunks in one of two alternating sets, and sign-out deletes the
+  header before removing the chunks from both sets. During writes, failures before the header entry switches preserve the previous
   credential; after the header switches, the new credential is live, though a
   failure while deleting old entries still makes the operation return an
   error.
@@ -729,7 +739,7 @@ In `--json` mode, errors print `{"error": {"code": ..., "status": ...,
 | `Authentication_RequestFromUnsupportedUserRole` | HTTP 403 unsupported Entra role for `signInActivity` |
 | `CredentialLockBusy` | Windows `credentials.lock` timed out after 10 seconds (`status` 0) |
 | `CredentialLockFailed` | Windows `credentials.lock` could not be found, opened or locked (`status` 0) |
-| Preserved Graph or OAuth code | Server error code (such as `invalid_grant` or `S2SUnauthorized`) with HTTP status |
+| Preserved Graph or OAuth code | Server error code (such as `S2SUnauthorized`) with HTTP status. Exceptions return `CommandFailed` with `status` 0: device-code `access_denied` and `invalid_grant`, browser callback errors, and a failed profile request during sign-in |
 | `CommandFailed` | Local validation, keyring or wrapped error (`status` 0); `consent_required` / `AADSTS65001` on `auth refresh` is converted to `CommandFailed` with remedial guidance |
 
 ## Environment variables
@@ -745,12 +755,12 @@ Every global flag and login ID flag has an environment variable equivalent:
 | `ENTRA_PLAIN` | `--plain` | Tab-separated or plain output |
 | `ENTRA_SELECT` | `--select` | Comma-separated table or `--plain` column names |
 | `ENTRA_RESULTS_ONLY` | `--results-only` | Omit the `{results, count}` JSON envelope |
-| `ENTRA_TIMEOUT` | `--timeout` | Per-request Microsoft Graph timeout in seconds (`0` means `60`, max `600`); OAuth HTTP requests use a fixed 30-second timeout |
+| `ENTRA_TIMEOUT` | `--timeout` | Per-request timeout in seconds for command Graph requests (`0` means `60`, max `600`); OAuth requests and the sign-in `/me` request use a fixed 30-second timeout |
 | `ENTRA_VERBOSE` | `--verbose` | Print request and authentication steps on standard error |
 | `ENTRA_COLOR` | `--color` | Accepts `auto`, `never` or `always`; output is not coloured |
 | `ENTRA_NO_WRITE` | `--no-write` | Guards against directory mutations; does not stop `auth login`, `auth refresh` or `auth logout` from updating local credentials and metadata |
 | `ENTRA_NO_INPUT` | `--no-input` | Rejects `auth login` before authentication starts; `auth refresh` stays available; does not suppress OS credential-store dialogs |
-| `ENTRA_WRAP_UNTRUSTED` | `--wrap-untrusted` | Mark directory free text with `[UNTRUSTED:<id>]` wrappers in typed JSON output |
+| `ENTRA_WRAP_UNTRUSTED` | `--wrap-untrusted` | Mark directory free text with `[UNTRUSTED:<id>]` wrappers in JSON output; deep records, several `user list` exports and `auth list` are not wrapped, as `entra --help` lists under `--wrap-untrusted` |
 | `ENTRA_CONFIG_DIR` | none | Override directory for `config.json` and `accounts/`; does not move OS keyring items or Windows `credentials.lock` |
 
 ## Microsoft references
