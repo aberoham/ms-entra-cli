@@ -1,24 +1,55 @@
 # entra
 
-Microsoft Entra ID directory lookups from the command line: a person's
-manager, their direct reports, the management chain above them, the groups
-they belong to, and the extended attributes on their record.
+**Look up managers, direct reports, reporting chains, group memberships and
+email aliases in Microsoft Entra ID (formerly Azure Active Directory) from the
+terminal, without opening the Microsoft Entra admin center or loading the
+Microsoft Graph PowerShell modules.**
 
-```bash
-entra user manager jane.doe@example.com   # one level up
-entra user reports jane.doe@example.com   # direct reports, one level down
-entra user chain jane.doe@example.com     # the management line upwards
-entra user get shared-inbox@example.com   # every alias, primary marked
-entra user groups jane.doe@example.com --kind distribution
-entra user search "jane"
-entra user list --manager --json          # everyone, with their managers
-entra user disabled-manager               # people whose manager is disabled
-entra licences holders --sku SPE_E5 --by-company
-entra reports copilot-usage --by-company   # Copilot use per company
-```
+[![Latest release](https://img.shields.io/github/v/release/aberoham/ms-entra-cli)](https://github.com/aberoham/ms-entra-cli/releases/latest)
+[![Continuous integration](https://img.shields.io/github/actions/workflow/status/aberoham/ms-entra-cli/ci.yml?branch=main&label=CI)](https://github.com/aberoham/ms-entra-cli/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/github/license/aberoham/ms-entra-cli)](LICENSE)
+
+Install on macOS and Linux with `brew install aberoham/tap/entra`. Windows
+users can follow the [Windows](#windows) install instructions below. Setup
+requires your own app registration with administrator consent
+([docs/auth.md](docs/auth.md)).
 
 Read-only. There is no write path: changing a person's manager belongs in the
 systems of record that feed the directory, not in a lookup tool.
+
+## What it finds
+
+- People whose manager's account is disabled ("orphaned users"), with the
+  next enabled manager above as a suggested replacement:
+  `entra user disabled-manager`
+- The whole directory with managers as JSON for scripts:
+  `entra user list --manager --json`
+- A person's manager: `entra user manager jane.doe@example.com`
+- A person's management line upwards: `entra user chain jane.doe@example.com`
+- A manager's direct reports: `entra user reports jane.doe@example.com`
+- Every email alias on a mailbox, with the primary address marked:
+  `entra user get shared-inbox@example.com`
+- Direct and nested group memberships: `entra user groups jane.doe@example.com`
+- Every user who holds a licence, by stock-keeping unit (SKU) name or ID:
+  `entra licences holders --sku SPE_E5`
+- Microsoft 365 Copilot use per person or per company:
+  `entra reports copilot-usage --by-company`
+
+```text
+NAME          SIGN-IN NAME           ENABLED  DEPARTMENT   MANAGER     MANAGER SIGN-IN NAME  NEXT ENABLED MANAGER  NEXT ENABLED SIGN-IN NAME
+Alice Carter  alice@example.com      yes      Engineering  Sam Taylor  sam@example.com       Dana Lee              dana@example.com
+Ben Ortiz     ben.ortiz@example.com  yes      Engineering  Sam Taylor  sam@example.com       Dana Lee              dana@example.com
+Priya Nair    priya@example.com      yes      Finance      Robin Hall  robin@example.com     Morgan Chen           morgan@example.com
+```
+
+## Platforms
+
+Release builds cover macOS (Apple silicon and Intel, Developer ID signed and
+notarized), Linux (x86-64 and Arm64, statically linked) and Windows (x86-64).
+Every pull request runs the continuous integration (CI) test suite on Linux,
+macOS and Windows. Every release smoke-tests each archive. The Windows binary
+is not code-signed. Day-to-day use has been on macOS, so Windows reports are
+welcome as [issues](https://github.com/aberoham/ms-entra-cli/issues).
 
 ## Why it exists
 
