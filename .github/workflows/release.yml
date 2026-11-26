@@ -86,10 +86,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      # rustup installs the release named in rust-toolchain.toml.
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
 
       - name: Install musl-tools
         if: endsWith(matrix.target, '-linux-musl')

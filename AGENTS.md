@@ -214,7 +214,9 @@ must not touch the real keyring or Microsoft Graph.
 
 ## Verification
 
-For ordinary Rust changes, run:
+Run these through rustup, so `rust-toolchain.toml` picks the same Rust
+release CI uses; a Rust installed another way ignores that file. For ordinary
+Rust changes, run:
 
 ```bash
 cargo fmt --all -- --check
