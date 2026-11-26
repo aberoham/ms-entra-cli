@@ -26,6 +26,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # rustup installs the release named in rust-toolchain.toml, which the
+      # cargo call below selects.
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+
       # The Homebrew tap trusts the tag, so a tag that disagrees with the
       # binary's own version must never produce a release.
       - name: Check tag against the package version
@@ -86,10 +94,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      # rustup installs the release named in rust-toolchain.toml.
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc --version
 
       - name: Install musl-tools
         if: endsWith(matrix.target, '-linux-musl')

@@ -1,0 +1,7 @@
+# The Rust release every build, lint and test uses, locally under rustup and
+# in CI. Raise it in its own pull request and fix any new lints there.
+# Keep rust-version in Cargo.toml equal to it.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

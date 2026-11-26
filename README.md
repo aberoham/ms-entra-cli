@@ -117,7 +117,7 @@ from the tagged commit. With the GitHub CLI:
 gh attestation verify entra-<version>-<target>.tar.gz --repo aberoham/ms-entra-cli
 ```
 
-To build from source you need a current stable Rust toolchain:
+To build from source you need Rust 1.100 or later. Under rustup, `rust-toolchain.toml` selects the release CI uses:
 
 ```bash
 cargo build --release --locked

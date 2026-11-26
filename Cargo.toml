@@ -2,6 +2,7 @@
 name = "ms-entra-cli"
 version = "0.6.0"
 edition = "2021"
+rust-version = "1.100"
 license = "MIT"
 description = "Small read-only Microsoft Entra ID directory lookup CLI"
 repository = "https://github.com/aberoham/ms-entra-cli"
